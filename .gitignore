@@ -15,10 +15,6 @@ venv/
 # Environment / secrets
 .env
 
-# GCP service account keys (e.g. Gemini / Vertex). Set GOOGLE_APPLICATION_CREDENTIALS in .env to the path.
-AI Endpoint Configuration.json
-*-service-account*.json
-
 # IDE
 .vscode/
 .idea/

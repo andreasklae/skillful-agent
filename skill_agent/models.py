@@ -125,7 +125,16 @@ class ToolCallRecord(BaseModel):
 
     tool: str = Field(description="Name of the tool that was called.")
     input: dict[str, Any] = Field(description="The input dict the LLM provided.")
+    output_preview: str = Field(default="", description="Short preview of tool output for debugging.")
     truncated: bool = Field(default=False, description="Whether the result was truncated to fit.")
+
+
+class InternalLogRecord(BaseModel):
+    """Detailed internal diagnostic event emitted by the agent runtime."""
+
+    event: str = Field(description="Short event identifier, e.g. 'tool_call'.")
+    message: str = Field(description="Human-readable description of the event.")
+    data: dict[str, Any] = Field(default_factory=dict, description="Structured event payload.")
 
 
 class TokenUsage(BaseModel):
@@ -162,6 +171,10 @@ class AgentResult(BaseModel):
         default_factory=TokenUsage,
         description="Total token usage across all turns.",
     )
+    internal_log: list[InternalLogRecord] = Field(
+        default_factory=list,
+        description="Optional detailed internal diagnostics captured during the run.",
+    )
 
 
 # ── Configuration Model ──────────────────────────────────────────────
@@ -187,4 +200,12 @@ class AgentConfig(BaseModel):
     system_prompt_extra: str | None = Field(
         default=None,
         description="Optional extra text appended to the system prompt.",
+    )
+    capture_internal_logs: bool = Field(
+        default=False,
+        description="Capture detailed internal diagnostic events in AgentResult.internal_log.",
+    )
+    stream_internal_logs: bool = Field(
+        default=False,
+        description="Print internal diagnostic events to stdout as they happen.",
     )

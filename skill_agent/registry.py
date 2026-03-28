@@ -108,27 +108,27 @@ def _parse_skill(skill_dir: Path) -> Skill | None:
 def discover_skills(skills_dir: Path | list[Path]) -> dict[str, Skill]:
     """Discover all skills in one or more directories.
 
-    Accepts either a single Path or a list of Paths. When multiple directories
-    are given they are scanned in order — if two directories define a skill with
-    the same name, the later directory wins (allows override / layering).
+    Accepts either a single Path or a list of Paths. Scans each directory for
+    subdirectories containing a SKILL.md file, parses them (including any bundled
+    resources), and returns all skills merged and sorted alphabetically.
 
-    Scans for subdirectories containing a SKILL.md file, parses each one
-    (including any bundled resources), and returns them in alphabetical order.
+    If the same skill name appears in multiple directories, the last one wins.
 
     Returns:
         Dict mapping skill name -> Skill model.
     """
-    dirs = [skills_dir] if isinstance(skills_dir, Path) else list(skills_dir)
+    dirs = [skills_dir] if isinstance(skills_dir, Path) else skills_dir
 
-    merged: dict[str, Skill] = {}
+    skills: list[Skill] = []
     for d in dirs:
-        d = d.resolve()
-        if not d.exists():
+        resolved = d.resolve()
+        if not resolved.exists():
             continue
-        for child in sorted(d.iterdir()):
+        for child in sorted(resolved.iterdir()):
             if child.is_dir() and (child / "SKILL.md").exists():
                 parsed = _parse_skill(child)
                 if parsed:
-                    merged[parsed.name] = parsed
+                    skills.append(parsed)
 
-    return dict(sorted(merged.items()))
+    skills.sort(key=lambda s: s.name)
+    return {s.name: s for s in skills}
