@@ -92,10 +92,12 @@ class _RunDeps:
 class Agent:
     """Skill-based agent. Initialize once, call solve(prompt) as many times as needed.
 
-    Point it at a directory of skill folders and it discovers them automatically.
+    Point it at one or more directories of skill folders and it discovers them automatically.
+    When multiple directories are given, later entries override earlier ones on name conflict.
 
-    Example:
+    Examples:
         agent = Agent(model=model, skills_dir=Path("skills"))
+        agent = Agent(model=model, skills_dir=[Path("skills"), Path("extra_skills")])
         result = agent.solve("Who invented the telephone?")
         print(result.answer)
     """
@@ -104,14 +106,15 @@ class Agent:
         self,
         *,
         model: Model,
-        skills_dir: Path,
+        skills_dir: Path | list[Path],
         config: AgentConfig | None = None,
     ) -> None:
         from .registry import discover_skills
 
         skills = discover_skills(skills_dir)
         if not skills:
-            raise RuntimeError(f"No skills found in {skills_dir}. Add at least one SKILL.md.")
+            dirs = skills_dir if isinstance(skills_dir, list) else [skills_dir]
+            raise RuntimeError(f"No skills found in {dirs}. Add at least one SKILL.md.")
 
         cfg = config or AgentConfig()
 

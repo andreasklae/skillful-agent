@@ -12,7 +12,8 @@ skills/                          src/ (the SDK)
     references/                    stream.py   — streaming output
     assets/
         ↓                              ↓
-    Agent(model, skills_dir=Path("skills"))
+    Agent(model, skills_dir=Path("skills"))          # single directory
+    Agent(model, skills_dir=[Path("a"), Path("b")])  # multiple directories
         ↓
     agent.solve("your question") → AgentResult
 ```
@@ -46,8 +47,11 @@ model = OpenAIChatModel(
     provider=OpenAIProvider(api_key="your-api-key"),
 )
 
-# Create the agent — point it at your skills directory
+# Single directory
 agent = Agent(model=model, skills_dir=Path("skills"))
+
+# Multiple directories — later entries override earlier ones on name conflict
+agent = Agent(model=model, skills_dir=[Path("base_skills"), Path("my_skills")])
 
 # Blocking
 result = agent.solve("Your instructions")
@@ -63,7 +67,7 @@ print(result.todo_list)           # list[TodoItem]
 print(result.usage.input_tokens)  # int
 ```
 
-The `Agent` scans `skills_dir` on init, finds all `SKILL.md` files, and registers them. No manual wiring needed.
+The `Agent` scans `skills_dir` on init, finds all `SKILL.md` files, and registers them. No manual wiring needed. When multiple directories are given they are merged in order, so skills in later directories override same-named skills in earlier ones.
 
 ## Creating a skill
 
@@ -100,7 +104,7 @@ from skill_agent import Agent, AgentConfig
 
 agent = Agent(
     model=model,
-    skills_dir=Path("skills"),
+    skills_dir=[Path("base_skills"), Path("my_skills")],  # or a single Path
     config=AgentConfig(
         max_tokens=4096,                    # per LLM response
         max_turns=12,                       # max agentic loop iterations

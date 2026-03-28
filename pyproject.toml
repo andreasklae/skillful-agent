@@ -5,7 +5,8 @@ description = "A pydantic-ai based SDK for building AI agents with progressive s
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
-    "pydantic-ai",
+    "pydantic-ai-slim[duckduckgo,exa,openrouter,tavily,web]>=1.73.0",
+    "pydantic-ai[a2a,dbos,examples,outlines-llamacpp,outlines-mlxlm,outlines-sglang,outlines-transformers,outlines-vllm-offline,prefect,sentence-transformers,voyageai]>=1.73.0",
     "python-dotenv",
 ]
 
