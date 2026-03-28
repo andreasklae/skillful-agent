@@ -1,0 +1,14 @@
+[project]
+name = "skill-agent"
+version = "0.1.0"
+description = "A pydantic-ai based SDK for building AI agents with progressive skill disclosure."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-ai",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+# Dependencies for the example wikipedia_lookup skill
+examples = ["wikipedia-api>=0.8.0"]

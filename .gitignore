@@ -1,0 +1,23 @@
+# Task runs (prompts, attachments, responses)
+runs/
+dry_runs/
+
+# Large API spec files
+tripletex_openapi.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment / secrets
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Playground
+architecture-map.html
