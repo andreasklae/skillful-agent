@@ -29,6 +29,7 @@ Usage:
 """
 
 from .agent import Agent
+from .user_prompt_files import build_user_message
 from .models import (
     AgentConfig,
     AgentEvent,
@@ -45,6 +46,7 @@ from .models import (
 
 __all__ = [
     "Agent",
+    "build_user_message",
     "AgentConfig",
     "AgentEvent",
     "AgentResult",

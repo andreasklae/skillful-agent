@@ -17,8 +17,12 @@ The agent works like this:
 
 Public API
 ──────────
-    agent.run(prompt)        → AgentResult   (blocking, collects all events)
-    agent.run_stream(prompt) → AsyncGenerator[AgentEvent, ...]  (live stream)
+    agent.run(prompt, files=[...])        → AgentResult   (blocking, collects all events)
+    agent.run_stream(prompt, files=[...]) → AsyncGenerator[AgentEvent, ...]  (live stream)
+
+Optional ``files=`` attaches local paths (text inlined, images as vision parts, PDF as
+extracted text if the ``[pdf]`` extra is installed). With ``AgentConfig.user_file_roots``,
+the model can call ``read_user_file`` for on-demand reads under those directories.
 
 Conversation state is kept on the agent between ``run`` / ``run_stream`` calls.
 Call ``agent.clear_conversation()`` to start a new thread.
@@ -30,7 +34,7 @@ import logging
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -63,6 +67,7 @@ from .models import (
     ToolCallRecord,
     ToolResultEvent,
 )
+from .user_prompt_files import build_user_message, resolve_allowed_user_path
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +85,8 @@ class _RunDeps:
     tool_log: list[ToolCallRecord] = field(default_factory=list)
     todo_list: list[TodoItem] = field(default_factory=list)
     _next_todo_id: int = 1
+    user_file_roots: tuple[Path, ...] = field(default_factory=tuple)
+    max_user_file_read_chars: int = 15000
 
 
 # ── Agent ─────────────────────────────────────────────────────────────
@@ -124,12 +131,26 @@ class Agent:
         self._skills = skills
         self._config = cfg
 
+        roots = tuple(Path(p).expanduser().resolve() for p in cfg.user_file_roots)
+
         # _deps holds mutable per-run state; reset between calls via _reset_run_state()
-        self._deps = _RunDeps(skills=skills)
+        self._deps = _RunDeps(
+            skills=skills,
+            user_file_roots=roots,
+            max_user_file_read_chars=cfg.max_user_file_read_chars,
+        )
 
         # Build the system prompt and the underlying pydantic-ai runner
         system_prompt = _build_system_prompt(skills, cfg.system_prompt_extra)
-        self._runner = _create_runner(model, system_prompt, skills)
+        if roots:
+            listed = ", ".join(str(r) for r in roots)
+            system_prompt += (
+                "\n\n## User file access\n"
+                f"Additional files may live under: {listed}. "
+                "Call `read_user_file` with a path relative to one of these roots, "
+                "or an absolute path that stays inside them."
+            )
+        self._runner = _create_runner(model, system_prompt, skills, roots)
         self._model_settings = ModelSettings(max_tokens=cfg.max_tokens)
         self._usage_limits = UsageLimits(
             request_limit=cfg.max_turns if cfg.max_turns is not None else None,
@@ -144,7 +165,7 @@ class Agent:
         """Drop all remembered turns. Next ``run`` / ``run_stream`` starts fresh."""
         self._conversation_messages.clear()
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, *, files: Sequence[Path | str] | None = None) -> AgentResult:
         """Run the agent and wait for the full answer.
 
         Internally this drives the same _event_stream as run_stream, but
@@ -155,14 +176,18 @@ class Agent:
             todos   = [e for e in result.events if isinstance(e, TodoUpdateEvent)]
             tools   = [e for e in result.events if isinstance(e, ToolCallEvent)]
             answer  = result.answer  # or join TextDeltaEvents yourself
+
+        Pass ``files=`` with paths to attach text (read as UTF-8), images (vision), or
+        PDFs (text extraction; requires ``pip install 'skill-agent[pdf]'``).
         """
-        if not prompt.strip():
-            raise ValueError("Prompt cannot be empty.")
+        user_message = self._prepare_user_message(prompt, files)
 
         self._reset_run_state()
-        return asyncio.run(self._collect_run(prompt))
+        return asyncio.run(self._collect_run(user_message))
 
-    def run_stream(self, prompt: str) -> AsyncGenerator[AgentEvent, None]:
+    def run_stream(
+        self, prompt: str, *, files: Sequence[Path | str] | None = None
+    ) -> AsyncGenerator[AgentEvent, None]:
         """Run the agent and stream typed events as they happen.
 
         Returns an async generator — iterate it with `async for`. Each
@@ -184,16 +209,30 @@ class Agent:
             source.addEventListener("todo_update", e => renderTodos(e.data))
             source.addEventListener("tool_call",   e => logTool(e.data))
         """
-        if not prompt.strip():
-            raise ValueError("Prompt cannot be empty.")
+        user_message = self._prepare_user_message(prompt, files)
 
         self._reset_run_state()
 
         # Return the async generator directly. The caller is responsible
         # for iterating it inside an async context.
-        return self._event_stream(prompt)
+        return self._event_stream(user_message)
 
     # ── Internal helpers ──────────────────────────────────────────────
+
+    def _prepare_user_message(
+        self, prompt: str, files: Sequence[Path | str] | None
+    ) -> str | list[Any]:
+        msg = build_user_message(
+            prompt,
+            files,
+            max_text_file_chars=self._config.max_attached_text_file_chars,
+        )
+        if isinstance(msg, str):
+            if not msg.strip():
+                raise ValueError("Prompt cannot be empty unless you attach files.")
+        elif not msg or (isinstance(msg[0], str) and not str(msg[0]).strip() and len(msg) == 1):
+            raise ValueError("Prompt cannot be empty unless you attach files.")
+        return msg
 
     def _reset_run_state(self) -> None:
         """Clear all mutable state so each run() / run_stream() starts fresh."""
@@ -202,10 +241,10 @@ class Agent:
         self._deps.todo_list.clear()
         self._deps._next_todo_id = 1
 
-    async def _collect_run(self, prompt: str) -> AgentResult:
+    async def _collect_run(self, user_message: str | list[Any]) -> AgentResult:
         """Collect all events from _event_stream and build an AgentResult."""
         events: list[AgentEvent] = []
-        async for event in self._event_stream(prompt):
+        async for event in self._event_stream(user_message):
             events.append(event)
         return self._build_result(events)
 
@@ -229,7 +268,7 @@ class Agent:
             events=events,
         )
 
-    async def _event_stream(self, prompt: str) -> AsyncGenerator[AgentEvent, None]:
+    async def _event_stream(self, user_message: str | list[Any]) -> AsyncGenerator[AgentEvent, None]:
         """The core async generator that both run() and run_stream() rely on.
 
         Translates raw pydantic-ai stream events into typed AgentEvent objects:
@@ -241,7 +280,7 @@ class Agent:
         """
         hist = self._conversation_messages or None
         async for raw in self._runner.run_stream_events(
-            prompt,
+            user_message,
             deps=self._deps,
             model_settings=self._model_settings,
             usage_limits=self._usage_limits,
@@ -290,34 +329,27 @@ class Agent:
 # full bodies. The LLM must call use_skill to load the full instructions.
 # This keeps the prompt lean regardless of how many skills are registered.
 
-def _build_system_prompt(skills: dict[str, Skill], extra: str | None) -> str:
-    today = date.today().isoformat()
+_SYSTEM_PROMPT_TEMPLATE_PATH = Path(__file__).with_name("system_prompt.md")
 
+
+def _build_system_prompt(skills: dict[str, Skill], extra: str | None) -> str:
+    template = _SYSTEM_PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
     skill_lines = "\n".join(
         f"  - **{name}**: {skill.description}" for name, skill in skills.items()
     )
-
-    prompt = f"""You are a general-purpose task-solving AI agent.
-
-Today's date: {today}
-
-## Available skills (call `use_skill` to load full instructions)
-{skill_lines}
-
-## Built-in tools
-  - **use_skill**: Load a skill's instructions by name.
-  - **manage_todos**: Plan and track your task list.
-  - **read_reference**: Read a reference doc bundled with a skill.
-  - **run_script**: Run a Python script bundled with a skill.
-
-## Rules
-1. Plan first: call `manage_todos` with action "set" to create a task list.
-2. Pick the most relevant skill and call `use_skill` to load its instructions.
-3. Work through your task list, updating item statuses as you go.
-4. Use `read_reference` and `run_script` to access skill resources as needed.
-5. Adapt: add, remove, or reorder tasks if you learn something new.
-6. Return a concise final answer."""
-
+    skills_section = (
+        "## Available skills (call `use_skill` to load full instructions)\n"
+        f"{skill_lines}"
+    )
+    lines = template.splitlines()
+    try:
+        first_heading = next(i for i, line in enumerate(lines) if line.startswith("## "))
+    except StopIteration:
+        prompt = f"{template}\n\n{skills_section}"
+    else:
+        head = "\n".join(lines[:first_heading]).rstrip()
+        tail = "\n".join(lines[first_heading:])
+        prompt = f"{head}\n\n{skills_section}\n\n{tail}"
     if extra:
         prompt += f"\n\n{extra}"
     return prompt
@@ -410,6 +442,7 @@ def _create_runner(
     model: Model,
     system_prompt: str,
     skills: dict[str, Skill],
+    user_file_roots: tuple[Path, ...],
 ) -> PydanticAgent[_RunDeps, str]:
     """Build the pydantic-ai runner and register all built-in tools."""
 
@@ -623,5 +656,33 @@ def _create_runner(
         ))
 
         return response[:15000]
+
+    if user_file_roots:
+
+        @runner.tool(description=(
+            "Read a text file from the user workspace. "
+            "Use a path relative to a configured root, or an absolute path inside those roots. "
+            "Returns UTF-8 text (truncated if very long)."
+        ))
+        def read_user_file(ctx: RunContext[_RunDeps], path: str) -> str:
+            try:
+                file_path = resolve_allowed_user_path(path, ctx.deps.user_file_roots)
+            except FileNotFoundError:
+                return f"File not found or not under allowed roots: {path}"
+            except ValueError as e:
+                return str(e)
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return f"File is not valid UTF-8 text: {path}"
+            limit = ctx.deps.max_user_file_read_chars
+            truncated = len(content) > limit
+            out = content[:limit] if truncated else content
+            ctx.deps.tool_log.append(ToolCallRecord(
+                tool="read_user_file",
+                input={"path": path},
+                truncated=truncated,
+            ))
+            return out
 
     return runner

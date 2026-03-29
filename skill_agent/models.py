@@ -237,3 +237,15 @@ class AgentConfig(BaseModel):
         default=None,
         description="Extra text appended to the system prompt.",
     )
+    user_file_roots: list[Path] = Field(
+        default_factory=list,
+        description="If non-empty, registers read_user_file; paths must stay under these roots.",
+    )
+    max_user_file_read_chars: int = Field(
+        default=15000,
+        description="Maximum characters read_user_file returns per call.",
+    )
+    max_attached_text_file_chars: int | None = Field(
+        default=400_000,
+        description="Truncate inlined text/PDF content from run(..., files=...). None = no limit.",
+    )

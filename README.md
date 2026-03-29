@@ -19,10 +19,12 @@ At runtime:
 
 ```
 Agent(model, skills_dir)
-  └─ run(prompt)        → AgentResult
-  └─ run_stream(prompt) → AsyncGenerator[AgentEvent, ...]
+  └─ run(prompt, files=[...])        → AgentResult
+  └─ run_stream(prompt, files=[...]) → AsyncGenerator[AgentEvent, ...]
   └─ clear_conversation() — forget prior turns (optional)
 ```
+
+`files=` is optional: attach local paths so the model sees text (inlined), images (vision), or PDF text (see below).
 
 The agent remembers the conversation across `run` / `run_stream` calls on the same instance. Call `clear_conversation()` when you want a fresh thread.
 
@@ -89,6 +91,62 @@ asyncio.run(stream_to_cli())
 #     ...
 # agent.clear_conversation()  # start over when needed
 ```
+
+## Attaching files
+
+You can pass local file paths alongside the text prompt. The SDK turns them into the shape pydantic-ai expects for your model (text in the prompt string, images as `BinaryContent` parts).
+
+```python
+from pathlib import Path
+
+# Text files (e.g. .csv, .json, .xml, .txt, .py, .md) are read as UTF-8 and appended after your prompt.
+result = agent.run(
+    "Summarise the dataset.",
+    files=[Path("data/sample.csv")],
+)
+
+# Images (.jpg, .png, .webp, …) are sent as vision inputs for multimodal models.
+result = agent.run(
+    "What is in this photo?",
+    files=[Path("photos/IMG_001.jpg")],
+)
+
+# Streaming with files works the same way.
+async for event in agent.run_stream("Analyse both", files=[Path("a.txt"), Path("b.png")]):
+    ...
+```
+
+**PDFs:** text is extracted with [pdfplumber](https://github.com/jsvine/pdfplumber). Install the optional extra:
+
+```bash
+uv sync --extra pdf
+# or: pip install 'skill-agent[pdf]'
+```
+
+**Limits:** `AgentConfig.max_attached_text_file_chars` truncates inlined text and PDF extraction (default large cap; set `None` for no limit).
+
+**Empty prompt:** if you only attach files, a text-only run still needs content from those files; for image-only runs the SDK adds a short default line so the model knows to look at the images.
+
+### On-demand file reads (`read_user_file`)
+
+If you set `AgentConfig.user_file_roots` to one or more directories, the agent also gets a **`read_user_file`** tool: the model can request UTF-8 text from paths that stay under those roots (relative paths or allowed absolutes). Use this when you prefer not to load everything into the first prompt.
+
+```python
+from skill_agent import Agent, AgentConfig
+
+agent = Agent(
+    model=model,
+    skills_dir=Path("skills"),
+    config=AgentConfig(
+        user_file_roots=[Path("data/workspace")],
+        max_user_file_read_chars=15000,
+    ),
+)
+```
+
+The system prompt is extended automatically to mention the allowed roots.
+
+For advanced use, the same attachment logic is available as `build_user_message` from `skill_agent` if you need to assemble a user message yourself before calling pydantic-ai directly.
 
 ## Event types
 
@@ -247,6 +305,9 @@ Every agent run has these tools available automatically:
 | `manage_todos` | Plan and track an internal task list |
 | `read_reference` | Read a doc from a skill's `references/` directory |
 | `run_script` | Run a Python script from a skill's `scripts/` directory |
+| `read_user_file` | *(Optional)* Read UTF-8 text from disk under `AgentConfig.user_file_roots` |
+
+`read_user_file` is registered only when `user_file_roots` is non-empty.
 
 ## Configuration
 
@@ -260,6 +321,11 @@ agent = Agent(
         max_tokens=4096,        # max tokens per LLM response (default: 4096)
         max_turns=64,           # optional: max model requests per run (default: None = no cap)
         system_prompt_extra="You are a helpful assistant.",  # appended to system prompt
+        # Optional: attach large text/PDF via run(..., files=[...]) — truncation cap (None = no cap)
+        max_attached_text_file_chars=400_000,
+        # Optional: allow the model to read files on demand under these directories
+        user_file_roots=[Path("data/workspace")],
+        max_user_file_read_chars=15000,
     ),
 )
 ```
@@ -276,6 +342,8 @@ skill_agent/             The SDK package
   models.py              All data models and event types
   agent.py               Agent loop, built-in tools, event stream
   registry.py            Skill discovery from disk
+  user_prompt_files.py   Build user messages with optional file attachments
+  system_prompt.md       Default system prompt template (loaded by agent.py)
 Example.py               Runnable example (includes a simple CLI event consumer)
 pyproject.toml
 ```

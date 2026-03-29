@@ -21,10 +21,3 @@ venv/
 
 # Playground
 architecture-map.html
-
-# Skills: version-control only `skills/wikipedia/`; ignore every other top-level skill folder.
-# New directories under skills/ are ignored by default; add a `!skills/<name>/` and
-# `!skills/<name>/**` pair if another skill should be tracked.
-skills/*
-!skills/wikipedia/
-!skills/wikipedia/**
