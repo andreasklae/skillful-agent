@@ -7,9 +7,8 @@ A pydantic-ai based SDK for building AI agents with progressive skill disclosure
 ## Architecture
 
 - **Core:** `skill_agent/agent.py` — agent loop + built-in tools (use_skill, manage_todos, run_script, read_reference)
-- **Models:** `skill_agent/models.py` — all Pydantic models (Skill, AgentConfig, AgentResult)
+- **Models:** `skill_agent/models.py` — all Pydantic models and typed event types (Skill, AgentConfig, AgentResult, AgentEvent, …)
 - **Registry:** `skill_agent/registry.py` — discovers SKILL.md files + bundled resources from a given directory
-- **Streaming:** `skill_agent/stream.py` — StreamPrinter for live console output
 
 ## Key Pattern
 
@@ -48,8 +47,7 @@ skill_agent/             # The SDK package
   __init__.py
   models.py
   agent.py
-  stream.py
   registry.py
-main.py                  # Example entrypoint
+Example.py               # Example entrypoint (includes a simple CLI event consumer)
 pyproject.toml
 ```

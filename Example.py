@@ -1,48 +1,48 @@
-"""Example: run the skill agent with streaming output.
-
-Demonstrates the full flow:
-  1. Point the agent at a skills directory
-  2. Call solve_stream() to see live tool calls, todo progress, and answer tokens
-
-Run:
-    uv run main.py
-"""
-
-import os
+import asyncio
 from pathlib import Path
 
-from dotenv import load_dotenv
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from skill_agent import Agent
+from skill_agent import Agent, TextDeltaEvent, ToolCallEvent, TodoUpdateEvent
 
-load_dotenv()
+# Any pydantic-ai compatible model works (OpenAI, Anthropic, Azure, Gemini, etc.)
+model = OpenAIChatModel("gpt-4o", provider=OpenAIProvider(api_key="your-key"))
 
-
-def main() -> None:
-    api_key = os.getenv("API_KEY")
-    if not api_key:
-        raise SystemExit("API_KEY not found. Set it in .env or as an environment variable.")
-
-    model = OpenAIChatModel(
-        "gpt-4o",
-        provider=OpenAIProvider(api_key=api_key),
-    )
-
-    # Point at the skills directory — the agent discovers everything inside
-    agent = Agent(model=model, skills_dir=Path("skills"))
-
-    prompt = "What is fast api? be brief"
-    print(f"Prompt: {prompt}\n")
-
-    result = agent.solve_stream(prompt)
-
-    print(f"\nActivated skills: {result.activated_skills}")
-    print(f"Tool calls: {len(result.tool_log)}")
-    print(f"Todo items: {len(result.todo_list)}")
-    print(f"Tokens: {result.usage.input_tokens} in / {result.usage.output_tokens} out")
+agent = Agent(model=model, skills_dir=Path("skills"))
 
 
-if __name__ == "__main__":
-    main()
+# ── Blocking ──────────────────────────────────────────────────────────
+# Waits for the full answer. Returns AgentResult with the complete event timeline.
+
+result = agent.run("What is the speed of light?")
+
+print(result.answer)
+print(result.activated_skills)   # which skills were loaded
+print(result.usage.input_tokens) # token usage
+
+# Filter the event timeline by type
+tool_calls = [e for e in result.events if isinstance(e, ToolCallEvent)]
+todo_states = [e for e in result.events if isinstance(e, TodoUpdateEvent)]
+
+
+# ── Streaming ─────────────────────────────────────────────────────────
+# Yields typed events in real time. The caller decides what to do with them.
+
+async def stream_to_cli():
+    async for event in agent.run_stream("What is the speed of light?"):
+        if isinstance(event, TextDeltaEvent):
+            print(event.content, end="", flush=True)
+        elif isinstance(event, ToolCallEvent):
+            print(f"[tool] {event.name}")
+        elif isinstance(event, TodoUpdateEvent):
+            for item in event.items:
+                print(f"  - {item.content} ({item.status})")
+    print()
+
+asyncio.run(stream_to_cli())
+
+# Same agent instance remembers context for a follow-up:
+# async for event in agent.run_stream("And in miles per hour?"):
+#     ...
+# agent.clear_conversation()  # start over when needed

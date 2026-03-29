@@ -1,111 +1,76 @@
-"""Pydantic models for the skill-based agent SDK.
+"""Data models for the skill-based agent SDK.
 
-This module defines every data structure that flows through the agent.
-
-The models form a simple pipeline:
-  Skill (from SKILL.md) + Tool (user-defined) → solve() → AgentResult
+Everything that flows through the agent is defined here:
+  - Skill        — a skill loaded from a SKILL.md file
+  - Tool         — a callable capability the LLM can invoke
+  - AgentEvent   — typed events emitted during a run (todos, tool calls, text, etc.)
+  - AgentResult  — the final output of agent.run(), including the full event timeline
+  - AgentConfig  — optional settings (max tokens, max turns, etc.)
 """
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ── Skill Model ───────────────────────────────────────────────────────
-# Skills are parsed from SKILL.md files on disk. The agent sees only
-# the name + description in its system prompt (progressive disclosure).
-# The full body is loaded on demand when the agent calls `use_skill`.
+# ── Skill ─────────────────────────────────────────────────────────────
+#
+# A skill is a folder on disk containing a SKILL.md file plus optional
+# resources (scripts, references, assets). The agent loads skill
+# descriptions into the system prompt, but only loads the full body
+# when the LLM explicitly calls use_skill("skill_name").
+#
+# This "progressive disclosure" pattern keeps the context window lean
+# even when many skills are registered.
 
 
 class Skill(BaseModel):
-    """A skill parsed from a SKILL.md file.
-
-    Progressive disclosure pattern:
-      - The LLM initially sees only `name` and `description`
-      - When it calls `use_skill`, it receives the full `body`
-      - This keeps the system prompt small while allowing rich instructions
-
-    Skills can bundle resources alongside SKILL.md:
-      - scripts/    — executable code for deterministic/repetitive tasks
-      - references/ — docs loaded into context as needed via `read_reference`
-      - assets/     — files used in output (templates, icons, fonts)
-    """
+    """One skill discovered from a SKILL.md file."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    name: str = Field(description="Unique identifier for the skill.")
-    description: str = Field(description="Short summary shown to the LLM in the system prompt.")
+    name: str = Field(description="Unique identifier used to call this skill.")
+    description: str = Field(description="One-line summary shown to the LLM in the system prompt.")
     body: str = Field(description="Full markdown instructions, loaded on demand via use_skill.")
-    path: Path | None = Field(default=None, description="Filesystem path to the SKILL.md file.")
-    scripts: list[str] = Field(
-        default_factory=list,
-        description="Filenames in the scripts/ directory (e.g. ['lookup.py']).",
-    )
-    references: list[str] = Field(
-        default_factory=list,
-        description="Filenames in the references/ directory (e.g. ['api_guide.md']).",
-    )
-    assets: list[str] = Field(
-        default_factory=list,
-        description="Filenames in the assets/ directory (e.g. ['template.html']).",
-    )
+    path: Path | None = Field(default=None, description="Path to the SKILL.md file on disk.")
+
+    # Bundled resources the LLM can access after loading the skill
+    scripts: list[str] = Field(default_factory=list, description="Python scripts in scripts/.")
+    references: list[str] = Field(default_factory=list, description="Docs in references/.")
+    assets: list[str] = Field(default_factory=list, description="Other files in assets/.")
 
 
-# ── Tool Model ────────────────────────────────────────────────────────
-# Tools are callable capabilities that the LLM can invoke. Each tool
-# bundles together: a name/description for the LLM, a JSON Schema for
-# its parameters, and a Python handler function that does the actual work.
+# ── Tool ──────────────────────────────────────────────────────────────
 #
-# The handler signature is deliberately simple:
-#   handler(input: dict[str, Any]) -> str
-#
-# It receives the raw input dict from the LLM and returns a string
-# result. Returning str (not dict) keeps things simple — the string
-# goes directly into the tool_result message content.
+# Tools are callable capabilities the LLM can invoke during a run.
+# Each tool has a name, a description for the LLM, a JSON Schema for
+# its parameters, and a Python handler that does the actual work.
 
 
 class Tool(BaseModel):
-    """A callable tool that the LLM can invoke during execution.
-
-    Example — defining a weather tool:
-
-        def get_weather(input: dict) -> str:
-            city = input["city"]
-            return json.dumps({"temp": 22, "city": city})
-
-        weather_tool = Tool(
-            name="weather",
-            description="Get current weather for a city.",
-            input_schema={
-                "type": "object",
-                "properties": {"city": {"type": "string"}},
-                "required": ["city"],
-            },
-            handler=get_weather,
-        )
-    """
+    """A callable tool the LLM can invoke during a run."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    name: str = Field(description="Tool name — must be unique across all registered tools.")
+    name: str = Field(description="Unique tool name.")
     description: str = Field(description="What this tool does — shown to the LLM.")
-    input_schema: dict[str, Any] = Field(description="JSON Schema defining the tool's parameters.")
+    input_schema: dict[str, Any] = Field(description="JSON Schema for the tool's parameters.")
     handler: Callable[[dict[str, Any]], str] = Field(
-        exclude=True,  # Don't include the function when serializing
+        exclude=True,
         description="Python function: receives input dict, returns string result.",
     )
 
 
-
-# ── Result Models ─────────────────────────────────────────────────────
-# These capture the output of an agent run: what happened, what was
-# called, and how many tokens were used.
+# ── Todo list ─────────────────────────────────────────────────────────
+#
+# The agent maintains an internal task list to plan its work. These
+# models track the state of that list across the run.
 
 
 class TodoStatus(str, Enum):
-    """Status of a todo item in the agent's internal task list."""
+    """Lifecycle state of a single todo item."""
 
     pending = "pending"
     in_progress = "in_progress"
@@ -113,99 +78,162 @@ class TodoStatus(str, Enum):
 
 
 class TodoItem(BaseModel):
-    """A single item in the agent's internal task list."""
+    """One item in the agent's task list."""
 
-    id: int = Field(description="Unique identifier for this todo item.")
+    id: int = Field(description="Unique ID within this run.")
     content: str = Field(description="What needs to be done.")
-    status: TodoStatus = Field(default=TodoStatus.pending, description="Current status.")
+    status: TodoStatus = Field(default=TodoStatus.pending)
+
+
+# ── Tool call log ─────────────────────────────────────────────────────
+#
+# A lightweight record of each tool invocation, used to populate
+# AgentResult.tool_log for inspection after a run.
 
 
 class ToolCallRecord(BaseModel):
-    """A log entry for a single tool invocation during the agent loop."""
+    """A record of one tool invocation."""
 
     tool: str = Field(description="Name of the tool that was called.")
-    input: dict[str, Any] = Field(description="The input dict the LLM provided.")
-    output_preview: str = Field(default="", description="Short preview of tool output for debugging.")
-    truncated: bool = Field(default=False, description="Whether the result was truncated to fit.")
+    input: dict[str, Any] = Field(description="The arguments the LLM provided.")
+    output_preview: str = Field(default="", description="Short preview of the output.")
+    truncated: bool = Field(default=False, description="True if the output was truncated.")
 
 
-class InternalLogRecord(BaseModel):
-    """Detailed internal diagnostic event emitted by the agent runtime."""
-
-    event: str = Field(description="Short event identifier, e.g. 'tool_call'.")
-    message: str = Field(description="Human-readable description of the event.")
-    data: dict[str, Any] = Field(default_factory=dict, description="Structured event payload.")
+# ── Token usage ───────────────────────────────────────────────────────
 
 
 class TokenUsage(BaseModel):
-    """Token usage counters accumulated across all turns of the agent loop."""
+    """Total tokens used across all turns of a run."""
 
-    input_tokens: int = Field(default=0, description="Total input tokens across all turns.")
-    output_tokens: int = Field(default=0, description="Total output tokens across all turns.")
+    input_tokens: int = Field(default=0)
+    output_tokens: int = Field(default=0)
+
+
+# ── Stream events ─────────────────────────────────────────────────────
+#
+# These are the typed events emitted by _event_stream() in agent.py.
+# Every event has a `type` string literal, which makes them easy to
+# route on the consumer side — whether that's a CLI printer, a FastAPI
+# SSE endpoint, or a React frontend listening on EventSource.
+#
+# Consumer pattern (Python):
+#   async for event in agent.run_stream(prompt):
+#       if isinstance(event, TextDeltaEvent):
+#           print(event.content, end="")
+#
+# Consumer pattern (FastAPI SSE):
+#   yield f"event: {event.type}\ndata: {event.model_dump_json()}\n\n"
+#
+# Consumer pattern (JavaScript EventSource):
+#   source.addEventListener("text_delta", e => appendAnswer(e.data))
+#   source.addEventListener("todo_update", e => renderTodos(e.data))
+
+
+class TodoUpdateEvent(BaseModel):
+    """Emitted after every manage_todos call with the full current list.
+
+    The items list always reflects the complete current state, not just
+    the change — so consumers can replace their local state directly.
+    """
+
+    type: Literal["todo_update"] = "todo_update"
+    items: list[TodoItem]
+
+
+class ToolCallEvent(BaseModel):
+    """Emitted when the agent invokes a tool, before the result arrives."""
+
+    type: Literal["tool_call"] = "tool_call"
+    name: str
+    args: dict[str, Any]
+
+
+class ToolResultEvent(BaseModel):
+    """Emitted when a tool call completes."""
+
+    type: Literal["tool_result"] = "tool_result"
+    name: str
+
+
+class TextDeltaEvent(BaseModel):
+    """Emitted for each answer token as the model streams its response."""
+
+    type: Literal["text_delta"] = "text_delta"
+    content: str
+
+
+class RunCompleteEvent(BaseModel):
+    """Emitted once when the run finishes. Carries final token usage."""
+
+    type: Literal["run_complete"] = "run_complete"
+    usage: TokenUsage
+
+
+# Discriminated union of all event types.
+# The `type` field is the discriminator — Pydantic uses it to deserialize
+# the correct subtype automatically.
+AgentEvent = Annotated[
+    Union[TodoUpdateEvent, ToolCallEvent, ToolResultEvent, TextDeltaEvent, RunCompleteEvent],
+    Field(discriminator="type"),
+]
+
+
+# ── Agent result ──────────────────────────────────────────────────────
+#
+# Returned by agent.run(). Contains the answer plus several views of
+# what happened during the run — handy summaries AND the full event
+# timeline for consumers who want fine-grained control.
 
 
 class AgentResult(BaseModel):
-    """The structured output of a single agent run.
+    """The full output of a completed agent run.
 
-    Access fields directly as typed attributes:
-        result.answer           # str
-        result.activated_skills # list[str]
-        result.tool_log         # list[ToolCallRecord]
-        result.usage            # TokenUsage
+    Convenience fields (pre-filtered summaries):
+        result.answer           — the final text response
+        result.activated_skills — skills that were loaded via use_skill
+        result.tool_log         — chronological list of tool invocations
+        result.todo_list        — final state of the task list
+        result.usage            — total token usage
+
+    Full timeline:
+        result.events           — every event in order, filter as needed:
+            tool_calls = [e for e in result.events if isinstance(e, ToolCallEvent)]
     """
 
-    answer: str = Field(description="The agent's final text response.")
-    activated_skills: list[str] = Field(
+    answer: str
+    activated_skills: list[str] = Field(default_factory=list)
+    tool_log: list[ToolCallRecord] = Field(default_factory=list)
+    todo_list: list[TodoItem] = Field(default_factory=list)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    events: list[AgentEvent] = Field(
         default_factory=list,
-        description="Names of skills that were loaded via use_skill.",
-    )
-    tool_log: list[ToolCallRecord] = Field(
-        default_factory=list,
-        description="Chronological log of tool invocations (excludes use_skill).",
-    )
-    todo_list: list[TodoItem] = Field(
-        default_factory=list,
-        description="Final state of the agent's internal task list.",
-    )
-    usage: TokenUsage = Field(
-        default_factory=TokenUsage,
-        description="Total token usage across all turns.",
-    )
-    internal_log: list[InternalLogRecord] = Field(
-        default_factory=list,
-        description="Optional detailed internal diagnostics captured during the run.",
+        description="Ordered timeline of all events emitted during the run.",
     )
 
 
-# ── Configuration Model ──────────────────────────────────────────────
-# Optional settings for the agent run. All fields have sensible defaults,
-# so you can call solve() without providing a config at all.
+# ── Agent configuration ───────────────────────────────────────────────
+#
+# All fields are optional — the defaults are sensible for most use cases.
+# Pass an AgentConfig to Agent() to override them.
 
 
 class AgentConfig(BaseModel):
-    """Configuration for an agent run. All fields are optional with defaults."""
+    """Optional settings for the agent. All fields have sensible defaults."""
 
     model: str = Field(
         default="claude-sonnet-4-20250514",
-        description="Anthropic model ID to use.",
+        description="Anthropic model ID.",
     )
     max_tokens: int = Field(
         default=4096,
         description="Maximum tokens per LLM response.",
     )
-    max_turns: int = Field(
-        default=12,
-        description="Maximum agentic loop iterations before stopping.",
+    max_turns: int | None = Field(
+        default=None,
+        description="Maximum model requests per run (each tool round counts). None = no cap (default).",
     )
     system_prompt_extra: str | None = Field(
         default=None,
-        description="Optional extra text appended to the system prompt.",
-    )
-    capture_internal_logs: bool = Field(
-        default=False,
-        description="Capture detailed internal diagnostic events in AgentResult.internal_log.",
-    )
-    stream_internal_logs: bool = Field(
-        default=False,
-        description="Print internal diagnostic events to stdout as they happen.",
+        description="Extra text appended to the system prompt.",
     )
