@@ -155,7 +155,7 @@ Every event has a `type` string literal field, making them easy to route in any 
 | Event | `type` | Contents |
 |---|---|---|
 | `TodoUpdateEvent` | `"todo_update"` | Full current todo list |
-| `ToolCallEvent` | `"tool_call"` | Tool name + args |
+| `ToolCallEvent` | `"tool_call"` | Tool name, args, optional `activity` (UI-oriented) |
 | `ToolResultEvent` | `"tool_result"` | Tool name |
 | `TextDeltaEvent` | `"text_delta"` | Incremental answer text (streamed chunk; not necessarily a single model token) |
 | `RunCompleteEvent` | `"run_complete"` | Final token usage (`usage`) |
@@ -184,7 +184,8 @@ Illustrative only; real `args` come from the model. `status` on todo items is al
 {
   "type": "tool_call",
   "name": "use_skill",
-  "args": { "skill_name": "wikipedia_lookup" }
+  "args": { "skill_name": "wikipedia_lookup" },
+  "activity": "Loading the lookup skill"
 }
 ```
 
@@ -197,7 +198,8 @@ Illustrative only; real `args` come from the model. `status` on todo items is al
   "args": {
     "action": "set",
     "payload": { "items": ["Plan step one", "Plan step two"] }
-  }
+  },
+  "activity": "Planning the steps"
 }
 ```
 
@@ -207,7 +209,8 @@ Illustrative only; real `args` come from the model. `status` on todo items is al
 {
   "type": "tool_call",
   "name": "read_reference",
-  "args": { "skill_name": "wikipedia_lookup", "filename": "api_notes.md" }
+  "args": { "skill_name": "wikipedia_lookup", "filename": "api_notes.md" },
+  "activity": "Opening bundled reference doc"
 }
 ```
 
@@ -221,7 +224,8 @@ Illustrative only; real `args` come from the model. `status` on todo items is al
     "skill_name": "wikipedia_lookup",
     "filename": "search.py",
     "args": "{\"query\": \"example\"}"
-  }
+  },
+  "activity": "Running bundled script"
 }
 ```
 

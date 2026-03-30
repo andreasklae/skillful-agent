@@ -4,7 +4,7 @@ Public API:
     Agent             — Create with model + skills_dir, call run() or run_stream()
     AgentEvent        — Discriminated union of all event types
     TodoUpdateEvent   — Todo list state after each manage_todos call
-    ToolCallEvent     — Tool invocation (name + args)
+    ToolCallEvent     — Tool invocation (name, args, optional activity)
     ToolResultEvent   — Tool completion
     TextDeltaEvent    — Answer token from the model
     RunCompleteEvent  — Final event (token usage); conversation memory lives on Agent

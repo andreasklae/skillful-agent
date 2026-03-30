@@ -147,6 +147,10 @@ class ToolCallEvent(BaseModel):
     type: Literal["tool_call"] = "tool_call"
     name: str
     args: dict[str, Any]
+    activity: str | None = Field(
+        default=None,
+        description="Short user-facing description of what the model is doing (from the tool call).",
+    )
 
 
 class ToolResultEvent(BaseModel):

@@ -34,30 +34,61 @@ from .models import Skill
 
 
 def _parse_frontmatter(raw: str) -> dict[str, str]:
-    """Parse simple `key: value` frontmatter without requiring a YAML library.
+    """Parse YAML-like frontmatter without requiring a YAML library.
 
     Handles:
+      - Simple ``key: value`` on a single line
       - Quoted values (single or double quotes are stripped)
+      - Multi-line block scalars: ``key: >`` or ``key: |`` followed by
+        indented continuation lines (joined with spaces)
+      - Implicit continuation: ``key:`` with the value on indented lines
       - Comment lines (starting with #) and blank lines are skipped
     """
     meta: dict[str, str] = {}
+    current_key: str | None = None
+    current_lines: list[str] = []
+
+    def _save():
+        nonlocal current_key, current_lines
+        if current_key is not None:
+            value = " ".join(current_lines).strip()
+            if value:
+                meta[current_key] = value
+        current_key = None
+        current_lines = []
+
     for line in raw.splitlines():
         stripped = line.strip()
 
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
+        if not stripped or stripped.startswith("#"):
             continue
 
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        value = value.strip()
+        # Indented line while we have an active key → continuation
+        if line[0:1] in (" ", "\t") and current_key is not None:
+            current_lines.append(stripped)
+            continue
 
-        # Strip surrounding quotes if present
-        if (value.startswith('"') and value.endswith('"')) or (
-            value.startswith("'") and value.endswith("'")
-        ):
-            value = value[1:-1]
+        # New key: value line
+        if ":" in stripped:
+            _save()
+            key, value = stripped.split(":", 1)
+            current_key = key.strip()
+            value = value.strip()
 
-        meta[key] = value
+            # Strip surrounding quotes
+            if len(value) >= 2 and (
+                (value[0] == '"' and value[-1] == '"')
+                or (value[0] == "'" and value[-1] == "'")
+            ):
+                value = value[1:-1]
+
+            # Block scalar indicators → value comes from continuation lines
+            if value in (">", "|", ">-", "|-", ">+", "|+"):
+                pass  # current_lines stays empty; continuations will fill it
+            elif value:
+                current_lines.append(value)
+
+    _save()
     return meta
 
 
@@ -106,11 +137,15 @@ def _parse_skill(skill_dir: Path) -> Skill | None:
 
 
 def discover_skills(skills_dir: Path | list[Path]) -> dict[str, Skill]:
-    """Discover all skills in one or more directories.
+    """Discover all skills in one or more directory trees.
 
-    Accepts either a single Path or a list of Paths. Scans each directory for
-    subdirectories containing a SKILL.md file, parses them (including any bundled
-    resources), and returns all skills merged and sorted alphabetically.
+    Accepts either a single Path or a list of Paths. Recursively scans each
+    directory tree for any subdirectory containing a SKILL.md file, parses
+    them (including any bundled resources), and returns all skills merged and
+    sorted alphabetically.
+
+    This means you can pass a top-level directory containing nested
+    categories of skills and every SKILL.md at any depth will be found.
 
     If the same skill name appears in multiple directories, the last one wins.
 
@@ -124,11 +159,10 @@ def discover_skills(skills_dir: Path | list[Path]) -> dict[str, Skill]:
         resolved = d.resolve()
         if not resolved.exists():
             continue
-        for child in sorted(resolved.iterdir()):
-            if child.is_dir() and (child / "SKILL.md").exists():
-                parsed = _parse_skill(child)
-                if parsed:
-                    skills.append(parsed)
+        for skill_md in sorted(resolved.rglob("SKILL.md")):
+            parsed = _parse_skill(skill_md.parent)
+            if parsed:
+                skills.append(parsed)
 
     skills.sort(key=lambda s: s.name)
     return {s.name: s for s in skills}

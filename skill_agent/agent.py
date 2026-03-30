@@ -36,7 +36,9 @@ import sys
 from dataclasses import dataclass, field
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Annotated, Any, AsyncGenerator
+
+from pydantic import Field
 
 from pydantic_ai import Agent as PydanticAgent, RunContext
 from pydantic_ai.messages import (
@@ -74,9 +76,9 @@ logger = logging.getLogger(__name__)
 
 # ── Per-run state ──────────────────────────────────────────────────────
 #
-# This dataclass holds all mutable state for a single run. pydantic-ai
-# passes it into every tool call via RunContext.deps, so tools can read
-# skills and update logs without using global variables.
+# Mutable state shared across tool calls. ``todo_list`` persists across
+# ``run`` / ``run_stream`` on the same agent; other fields reset each run.
+# pydantic-ai passes deps via RunContext.deps.
 
 @dataclass
 class _RunDeps:
@@ -87,6 +89,7 @@ class _RunDeps:
     _next_todo_id: int = 1
     user_file_roots: tuple[Path, ...] = field(default_factory=tuple)
     max_user_file_read_chars: int = 15000
+    user_skills_dirs: tuple[Path, ...] = field(default_factory=tuple)
 
 
 # ── Agent ─────────────────────────────────────────────────────────────
@@ -116,32 +119,41 @@ class Agent:
         self,
         *,
         model: Model,
-        skills_dir: Path | list[Path],
+        skills_dir: Path,
         config: AgentConfig | None = None,
     ) -> None:
         from .registry import discover_skills
 
-        # Discover all SKILL.md files under the given directory/directories
+        # Discover native skills shipped with the SDK (native-skills/ next to this package)
+        native_skills_dir = Path(__file__).resolve().parent.parent / "native-skills"
+        native_skills = discover_skills(native_skills_dir) if native_skills_dir.is_dir() else {}
+
+        # Discover user skills from the provided directory (recurses into subdirectories)
         skills = discover_skills(skills_dir)
-        if not skills:
+        if not skills and not native_skills:
             raise RuntimeError(f"No skills found in {skills_dir}. Add at least one SKILL.md.")
+
+        # Merge: user skills take precedence over native skills with the same name
+        all_skills = {**native_skills, **skills}
 
         cfg = config or AgentConfig()
 
-        self._skills = skills
+        self._skills = all_skills
         self._config = cfg
 
         roots = tuple(Path(p).expanduser().resolve() for p in cfg.user_file_roots)
 
         # _deps holds mutable per-run state; reset between calls via _reset_run_state()
         self._deps = _RunDeps(
-            skills=skills,
+            skills=all_skills,
             user_file_roots=roots,
             max_user_file_read_chars=cfg.max_user_file_read_chars,
+            user_skills_dirs=(Path(skills_dir).resolve(),),
         )
 
         # Build the system prompt and the underlying pydantic-ai runner
-        system_prompt = _build_system_prompt(skills, cfg.system_prompt_extra)
+        system_prompt = _build_system_prompt(all_skills, cfg.system_prompt_extra)
+
         if roots:
             listed = ", ".join(str(r) for r in roots)
             system_prompt += (
@@ -150,7 +162,7 @@ class Agent:
                 "Call `read_user_file` with a path relative to one of these roots, "
                 "or an absolute path that stays inside them."
             )
-        self._runner = _create_runner(model, system_prompt, skills, roots)
+        self._runner = _create_runner(model, system_prompt, roots)
         self._model_settings = ModelSettings(max_tokens=cfg.max_tokens)
         self._usage_limits = UsageLimits(
             request_limit=cfg.max_turns if cfg.max_turns is not None else None,
@@ -162,8 +174,10 @@ class Agent:
     # ── Public API ────────────────────────────────────────────────────
 
     def clear_conversation(self) -> None:
-        """Drop all remembered turns. Next ``run`` / ``run_stream`` starts fresh."""
+        """Drop all remembered turns and the in-memory todo list. Next run starts fresh."""
         self._conversation_messages.clear()
+        self._deps.todo_list.clear()
+        self._deps._next_todo_id = 1
 
     def run(self, prompt: str, *, files: Sequence[Path | str] | None = None) -> AgentResult:
         """Run the agent and wait for the full answer.
@@ -235,11 +249,14 @@ class Agent:
         return msg
 
     def _reset_run_state(self) -> None:
-        """Clear all mutable state so each run() / run_stream() starts fresh."""
+        """Clear per-run bookkeeping. Todo list and IDs persist across turns; clear via clear_conversation()."""
         self._deps.activated_skills.clear()
         self._deps.tool_log.clear()
-        self._deps.todo_list.clear()
-        self._deps._next_todo_id = 1
+
+    @property
+    def current_todos(self) -> list[TodoItem]:
+        """Copy of the live task list (persists across ``run`` / ``run_stream`` until cleared)."""
+        return list(self._deps.todo_list)
 
     async def _collect_run(self, user_message: str | list[Any]) -> AgentResult:
         """Collect all events from _event_stream and build an AgentResult."""
@@ -288,13 +305,30 @@ class Agent:
         ):
             # The LLM is calling a tool
             if isinstance(raw, FunctionToolCallEvent):
+                args = dict(raw.part.args_as_dict())
+                act = args.pop("activity", None)
+                if isinstance(act, str):
+                    act = act.strip() or None
+                else:
+                    act = None
+                logger.debug(
+                    "tool_call  %-20s  args=%s",
+                    raw.part.tool_name,
+                    json.dumps(args, ensure_ascii=False, default=str)[:400],
+                )
                 yield ToolCallEvent(
                     name=raw.part.tool_name,
-                    args=raw.part.args_as_dict(),
+                    args=args,
+                    activity=act,
                 )
 
             # A tool call just finished
             elif isinstance(raw, FunctionToolResultEvent):
+                logger.debug(
+                    "tool_result %-20s  result=%s",
+                    raw.result.tool_name,
+                    str(raw.result.content)[:400],
+                )
                 yield ToolResultEvent(name=raw.result.tool_name)
 
                 # manage_todos modifies the todo list in _deps — emit the new state
@@ -441,7 +475,6 @@ def _parse_todo_status(raw: Any) -> TodoStatus | None:
 def _create_runner(
     model: Model,
     system_prompt: str,
-    skills: dict[str, Skill],
     user_file_roots: tuple[Path, ...],
 ) -> PydanticAgent[_RunDeps, str]:
     """Build the pydantic-ai runner and register all built-in tools."""
@@ -457,11 +490,33 @@ def _create_runner(
     # Loads the full body of a skill into the LLM's context, along with
     # a list of available bundled resources (scripts, references, assets).
 
+    ActivityDesc = Annotated[
+        str,
+        Field(
+            description=(
+                "Very short plain-language phrase for the user interface describing what you are doing "
+                "with this tool call."
+            ),
+        ),
+    ]
+
     @runner.tool(description=(
         "Load a skill's full instructions by name. "
-        "Call this BEFORE performing any domain-specific actions."
+        "Call this BEFORE performing any domain-specific actions. "
+        "Pass only the registered skill_name; do not pass search queries here—use the skill's tools after loading."
     ))
-    def use_skill(ctx: RunContext[_RunDeps], skill_name: str) -> str:
+    def use_skill(
+        ctx: RunContext[_RunDeps],
+        skill_name: str,
+        activity: ActivityDesc = "",
+        query: Annotated[
+            str,
+            Field(
+                default="",
+                description="Ignored. Some models wrongly send a search string here; only skill_name is used.",
+            ),
+        ] = "",
+    ) -> str:
         skill = ctx.deps.skills.get(skill_name)
         if not skill:
             available = ", ".join(ctx.deps.skills)
@@ -490,6 +545,122 @@ def _create_runner(
         parts.append("\n\nFollow these instructions.")
         return "".join(parts)
 
+    # ── register_skill ───────────────────────────────────────────────
+    # Hot-registers a newly created skill so it becomes usable
+    # (use_skill, run_script, read_reference) within the same session.
+
+    @runner.tool(description=(
+        "Register a newly created skill so it becomes usable in this session. "
+        "Call this after creating a new skill directory with a SKILL.md file. "
+        "Provide the absolute path to the skill directory (the folder containing SKILL.md). "
+        "After registering, you can use use_skill, run_script, and read_reference with it."
+    ))
+    def register_skill(
+        ctx: RunContext[_RunDeps],
+        skill_dir_path: str,
+        activity: ActivityDesc = "",
+    ) -> str:
+        from .registry import _parse_skill
+
+        skill_dir = Path(skill_dir_path).resolve()
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            return f"No SKILL.md found at {skill_dir}. Create the skill first."
+
+        parsed = _parse_skill(skill_dir)
+        if parsed is None:
+            return f"Could not parse SKILL.md at {skill_dir}. Check that it has valid --- frontmatter."
+
+        # Add (or replace) the skill in the live registry
+        ctx.deps.skills[parsed.name] = parsed
+
+        resources: list[str] = []
+        if parsed.scripts:
+            resources.append(f"Scripts: {', '.join(parsed.scripts)}")
+        if parsed.references:
+            resources.append(f"References: {', '.join(parsed.references)}")
+        if parsed.assets:
+            resources.append(f"Assets: {', '.join(parsed.assets)}")
+
+        res_info = ("\n  ".join(resources)) if resources else "None"
+        return (
+            f"Registered skill '{parsed.name}' from {skill_dir}.\n"
+            f"  Resources: {res_info}\n"
+            f"You can now use use_skill('{parsed.name}'), run_script('{parsed.name}', ...), "
+            f"and read_reference('{parsed.name}', ...)."
+        )
+
+    # ── scaffold_skill ───────────────────────────────────────────────
+    # Creates a new skill directory skeleton and registers it immediately.
+    # Avoids the path-encoding problem of passing paths through run_script args.
+
+    @runner.tool(description=(
+        "Create a new skill directory with the standard skeleton (SKILL.md, docs/, scripts/, tests/) "
+        "and immediately register it for use in this session. "
+        "Provide skill_name in kebab-case. "
+        "Creates the skill in the configured skills directory. "
+        "Returns the absolute path to the new skill directory."
+    ))
+    def scaffold_skill(
+        ctx: RunContext[_RunDeps],
+        skill_name: str,
+        activity: ActivityDesc = "",
+    ) -> str:
+        from .registry import _parse_skill
+
+        name = skill_name.strip().lower().replace(" ", "-")
+        if not name:
+            return "Error: skill_name is required."
+
+        if not ctx.deps.user_skills_dirs:
+            return "Error: no skills directory configured."
+        parent = ctx.deps.user_skills_dirs[0]
+
+        skill_dir = parent / name
+
+        if skill_dir.exists():
+            return f"Directory already exists: {skill_dir}. Use register_skill to register it."
+
+        # Create skeleton
+        try:
+            for subdir in ("docs", "scripts", "tests"):
+                (skill_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(
+                f"---\nname: {name}\ndescription: TODO — describe what this skill does and when to use it.\n---\n\n"
+                f"# {name}\n\nTODO — write skill instructions here.\n",
+                encoding="utf-8",
+            )
+
+            (skill_dir / "docs" / "index.md").write_text(
+                f"# {name} — docs index\n\n| File | Description |\n|------|-------------|\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "tests" / "test_results.md").write_text(
+                f"# {name} — test results\n\nNo tests run yet.\n",
+                encoding="utf-8",
+            )
+        except Exception as e:
+            return f"Error creating skill directory: {e}"
+
+        # Register immediately
+        parsed = _parse_skill(skill_dir)
+        if parsed:
+            ctx.deps.skills[parsed.name] = parsed
+
+        ctx.deps.tool_log.append(ToolCallRecord(
+            tool="scaffold_skill",
+            input={"skill_name": name},
+            output_preview=str(skill_dir),
+        ))
+
+        return (
+            f"Created and registered skill '{name}' at:\n  {skill_dir}\n\n"
+            f"Next: write the SKILL.md body and scripts using write_skill_file(skill_name='{name}', path=..., content=...).\n"
+            f"Use run_script(skill_name='{name}', filename=...) to execute scripts once added."
+        )
+
     # ── manage_todos ──────────────────────────────────────────────────
     # Lets the LLM maintain an internal task list. The list is stored in
     # _RunDeps.todo_list so it's visible to the event stream.
@@ -497,6 +668,8 @@ def _create_runner(
     @runner.tool(description=(
         "Manage your internal task list. "
         'Actions: "set" (replace list), "add" (append), "update" (change status), "remove" (delete). '
+        "Each call returns JSON with every item's numeric `id`—use those ids with action update. "
+        "While working: set the current item to in_progress before other tools, then done when that step is finished. "
         "For action set, pass task strings in `items` (top-level array) or in `payload.items` or `payload.tasks`. "
         "For add, pass `content` top-level or in payload. "
         "For update/remove, pass numeric `id` in payload (string or int). "
@@ -510,6 +683,7 @@ def _create_runner(
         content: str | None = None,
         item_id: int | str | None = None,
         status: str | None = None,
+        activity: ActivityDesc = "",
     ) -> str:
         todos = ctx.deps.todo_list
         pl = dict(payload or {})
@@ -574,10 +748,20 @@ def _create_runner(
         "Provide the skill_name and filename (e.g. 'api_guide.md'). "
         "Only works for files listed in the skill's references."
     ))
-    def read_reference(ctx: RunContext[_RunDeps], skill_name: str, filename: str) -> str:
+    def read_reference(
+        ctx: RunContext[_RunDeps],
+        skill_name: str,
+        filename: str,
+        activity: ActivityDesc = "",
+    ) -> str:
         skill = ctx.deps.skills.get(skill_name)
         if not skill:
-            return f"Skill '{skill_name}' not found."
+            available = ", ".join(ctx.deps.skills) or "(none)"
+            return (
+                f"Skill '{skill_name}' not found. Available: {available}. "
+                f"If you just created this skill with scaffold_skill.py, call "
+                f"register_skill(skill_dir_path=<absolute path to the skill directory>) first."
+            )
         if filename not in skill.references:
             return f"'{filename}' not in {skill_name}. Available: {skill.references}"
 
@@ -604,19 +788,38 @@ def _create_runner(
         "Provide skill_name, filename, and an optional JSON-encoded args string. "
         "Returns JSON with keys: ok, stdout, stderr, exit_code."
     ))
-    def run_script(ctx: RunContext[_RunDeps], skill_name: str, filename: str, args: str = "") -> str:
+    def run_script(
+        ctx: RunContext[_RunDeps],
+        skill_name: str,
+        filename: str,
+        args: str = "",
+        activity: ActivityDesc = "",
+    ) -> str:
         # Validate skill and script exist
         skill = ctx.deps.skills.get(skill_name)
         if not skill:
-            return json.dumps({"ok": False, "stdout": "", "stderr": f"Skill '{skill_name}' not found.", "exit_code": 2})
+            available = ", ".join(ctx.deps.skills) or "(none)"
+            return json.dumps({"ok": False, "stdout": "", "stderr": (
+                f"Skill '{skill_name}' not found. Available: {available}. "
+                f"If you just created this skill with scaffold_skill.py, you must call "
+                f"register_skill(skill_dir_path=<absolute path to skill directory>) before "
+                f"run_script or read_reference will work for it."
+            ), "exit_code": 2})
         if filename not in skill.scripts:
-            return json.dumps({"ok": False, "stdout": "", "stderr": f"Script '{filename}' not in {skill_name}. Available: {skill.scripts}", "exit_code": 2})
+            return json.dumps({"ok": False, "stdout": "", "stderr": (
+                f"Script '{filename}' not found in skill '{skill_name}'. "
+                f"Available scripts: {skill.scripts}. "
+                f"If you just added this file, call register_skill again to refresh."
+            ), "exit_code": 2})
 
         script_path = _resolve_skill_dir(skill) / "scripts" / filename
         if not script_path.exists():
             return json.dumps({"ok": False, "stdout": "", "stderr": f"File not found on disk: {script_path}", "exit_code": 2})
 
-        # Run the script in a subprocess with a 30-second timeout
+        # Run the script in a subprocess with a 30-second timeout.
+        # Args are passed BOTH as argv[1] (backwards compat for short args)
+        # AND piped via stdin (reliable for large content / special chars).
+        # Scripts can read from either: sys.argv[1] or sys.stdin.read().
         cmd = [sys.executable, str(script_path)]
         if args:
             cmd.append(args)
@@ -626,10 +829,11 @@ def _create_runner(
         try:
             proc = subprocess.run(
                 cmd,
+                input=args or None,
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=str(script_path.parent),
+                cwd=None,  # inherit the agent process's cwd so relative paths in args resolve correctly
             )
             stdout, stderr = proc.stdout or "", proc.stderr or ""
             exit_code = proc.returncode
@@ -657,6 +861,74 @@ def _create_runner(
 
         return response[:15000]
 
+    # ── write_skill_file ─────────────────────────────────────────────
+    # Writes content directly to a file on disk. This avoids the
+    # JSON-in-JSON double-encoding problem that happens when large
+    # content is passed through run_script's args parameter.
+
+    @runner.tool(description=(
+        "Write content to a file inside a skill directory. "
+        "Preferred form: provide skill_name (registered name) and path (relative path within the skill, "
+        "e.g. 'SKILL.md', 'scripts/get_weather.py', 'docs/index.md'). "
+        "The tool resolves the absolute path automatically from the registered skill. "
+        "Fallback: provide file_path as an absolute path if skill_name is unknown. "
+        "Set append=True to append instead of overwrite. "
+        "Creates parent directories as needed."
+    ))
+    def write_skill_file(
+        ctx: RunContext[_RunDeps],
+        content: str,
+        skill_name: str = "",
+        path: str = "",
+        file_path: str = "",
+        append: bool = False,
+        activity: ActivityDesc = "",
+    ) -> str:
+        # Resolve target path — prefer skill_name + relative path
+        if skill_name.strip() and path.strip():
+            skill = ctx.deps.skills.get(skill_name.strip())
+            if not skill:
+                return (
+                    f"Skill '{skill_name}' not found in registry. "
+                    f"Call scaffold_skill first, or register_skill if the directory already exists."
+                )
+            try:
+                base = _resolve_skill_dir(skill)
+            except ValueError as e:
+                return str(e)
+            target = (base / path.strip()).resolve()
+        elif file_path.strip():
+            target = Path(file_path.strip()).resolve()
+        else:
+            return "Provide either (skill_name + path) or file_path."
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if append:
+                with open(target, "a", encoding="utf-8") as f:
+                    f.write(content)
+                action = "Appended to"
+            else:
+                target.write_text(content, encoding="utf-8")
+                action = "Wrote"
+        except Exception as e:
+            return f"Error writing {target}: {e}"
+
+        # If we wrote a SKILL.md, refresh the skill registration so new scripts are visible
+        if target.name == "SKILL.md" and skill_name.strip():
+            from .registry import _parse_skill
+            refreshed = _parse_skill(target.parent)
+            if refreshed:
+                ctx.deps.skills[refreshed.name] = refreshed
+
+        ctx.deps.tool_log.append(ToolCallRecord(
+            tool="write_skill_file",
+            input={"skill_name": skill_name, "path": path or file_path, "append": append},
+            output_preview=f"{action} {len(content)} chars to {target.name}",
+        ))
+
+        return f"{action}: {target} ({len(content):,} chars)"
+
     if user_file_roots:
 
         @runner.tool(description=(
@@ -664,7 +936,11 @@ def _create_runner(
             "Use a path relative to a configured root, or an absolute path inside those roots. "
             "Returns UTF-8 text (truncated if very long)."
         ))
-        def read_user_file(ctx: RunContext[_RunDeps], path: str) -> str:
+        def read_user_file(
+            ctx: RunContext[_RunDeps],
+            path: str,
+            activity: ActivityDesc = "",
+        ) -> str:
             try:
                 file_path = resolve_allowed_user_path(path, ctx.deps.user_file_roots)
             except FileNotFoundError:
