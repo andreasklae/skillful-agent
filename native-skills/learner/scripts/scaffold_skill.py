@@ -8,13 +8,21 @@ Usage (via run_script):
     run_script(skill_name="learner", filename="scaffold_skill.py",
                args='{"name": "my-skill", "base_dir": "/path/to/category"}')
 
+    # For skills that expose an API or service with write operations:
+    run_script(skill_name="learner", filename="scaffold_skill.py",
+               args='{"name": "my-api-skill", "base_dir": "/path/to/category", "api_writes": true}')
+
 Creates the following structure under the target directory:
-    <name>/SKILL.md          - Frontmatter template with metadata fields
-    <name>/docs/             - Knowledge base directory
-    <name>/docs/index.md     - Table of contents for saved documents
-    <name>/scripts/          - Executable scripts directory
-    <name>/tests/            - Test cases directory
-    <name>/tests/test_results.md - Test results log
+    <name>/SKILL.md               - Frontmatter template with metadata fields
+    <name>/docs/                  - Knowledge base directory
+    <name>/docs/index.md          - Table of contents for saved documents
+    <name>/scripts/               - Executable scripts directory
+    <name>/tests/                 - Test cases directory
+    <name>/tests/test_results.md  - Test results log
+
+When api_writes=true, also creates:
+    <name>/client_functions.json  - Declares request_permission client function
+    <name>/permissions.yaml       - Default permission rules (reads allowed, writes prompt)
 
 Idempotent: will not overwrite existing files.
 """
@@ -24,8 +32,71 @@ import sys
 from datetime import date
 from pathlib import Path
 
+_CLIENT_FUNCTIONS_TEMPLATE = json.dumps(
+    [
+        {
+            "name": "request_permission",
+            "description": (
+                "Request user permission to execute a write operation on this service. "
+                "Call before any insert, update, delete, upsert, restore, or other destructive action."
+            ),
+            "awaits_user": True,
+            "parameters": [
+                {
+                    "name": "operation",
+                    "type": "string",
+                    "description": "The exact operation or method name being called.",
+                    "required": True,
+                },
+                {
+                    "name": "domain",
+                    "type": "string",
+                    "description": "The domain or category of the operation (e.g. 'Users', 'Orders').",
+                    "required": True,
+                },
+                {
+                    "name": "action",
+                    "type": "string",
+                    "description": "The action type: insert, update, delete, upsert, restore, or similar.",
+                    "required": True,
+                },
+            ],
+        }
+    ],
+    indent=2,
+)
 
-def scaffold(skill_name: str, base_dir: Path | None = None) -> None:
+_PERMISSIONS_YAML_TEMPLATE = """\
+# Permission manifest for {skill_name}
+#
+# Controls which operations the agent may execute without user approval.
+# Rules are evaluated in order — the last matching rule wins.
+#
+# IMPORTANT: This file is client-controlled. The agent may create it but
+# cannot overwrite it once it exists. Edit it directly to change rules.
+#
+# Fields per rule:
+#   domains: list of domains/categories to match, or ["*"] for all
+#   actions:  list of action types to match, or ["*"] for all
+#   allow:    true to allow without prompt, false to require user approval
+
+default_allow: false
+
+rules:
+  # Read operations are pre-approved — no user prompt needed
+  - domains: ["*"]
+    actions: ["query", "read", "search", "get", "list", "count", "fetch"]
+    allow: true
+
+  # Write operations (insert, update, delete, etc.) require user approval.
+  # To pre-approve specific write actions, add rules here, e.g.:
+  # - domains: ["TestDomain"]
+  #   actions: ["insert"]
+  #   allow: true
+"""
+
+
+def scaffold(skill_name: str, base_dir: Path | None = None, api_writes: bool = False) -> None:
     """Create the directory structure and template files for a learned skill."""
     if base_dir is None:
         print("Error: base_dir is required. Pass one of the user skill directories", file=sys.stderr)
@@ -105,7 +176,29 @@ Record what was tested, what passed, what failed, and what needs user action.
     else:
         print(f"  Skipped {test_results.relative_to(base_dir)} (already exists)")
 
+    # client_functions.json and permissions.yaml — only for API-write skills
+    if api_writes:
+        cf_path = skill_dir / "client_functions.json"
+        if not cf_path.exists():
+            cf_path.write_text(_CLIENT_FUNCTIONS_TEMPLATE + "\n", encoding="utf-8")
+            print(f"  Created {cf_path.relative_to(base_dir)}")
+        else:
+            print(f"  Skipped {cf_path.relative_to(base_dir)} (already exists)")
+
+        perm_path = skill_dir / "permissions.yaml"
+        if not perm_path.exists():
+            perm_path.write_text(
+                _PERMISSIONS_YAML_TEMPLATE.format(skill_name=skill_name),
+                encoding="utf-8",
+            )
+            print(f"  Created {perm_path.relative_to(base_dir)}")
+        else:
+            print(f"  Skipped {perm_path.relative_to(base_dir)} (already exists — client-controlled)")
+
     print(f"\nScaffolded learned skill at: {skill_dir}")
+    if api_writes:
+        print("  client_functions.json — agent will call request_permission before writes")
+        print("  permissions.yaml      — edit directly to pre-approve or restrict operations")
 
 
 def main() -> None:
@@ -120,7 +213,9 @@ def main() -> None:
     if args.get("base_dir"):
         base_dir = Path(args["base_dir"])
 
-    scaffold(name, base_dir)
+    api_writes = bool(args.get("api_writes", False))
+
+    scaffold(name, base_dir, api_writes=api_writes)
 
 
 if __name__ == "__main__":

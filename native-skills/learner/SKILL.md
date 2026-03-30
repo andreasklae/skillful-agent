@@ -190,6 +190,21 @@ scaffold_skill(skill_name="my-skill", base_dir="/path/to/category")
   prompt, or append a subdirectory (e.g. `.../Research` or `.../Learned-skills`).
   If omitted, defaults to the first user skill directory.
 
+**If the skill wraps an API or service that has write operations** (insert, update,
+delete, or any other destructive/mutating actions), pass `api_writes=true`:
+
+```
+scaffold_skill(skill_name="my-api-skill", base_dir="/path/to/category", api_writes=true)
+```
+
+This additionally creates:
+- `client_functions.json` — declares a `request_permission` client function the agent
+  must call before any write operation, pausing until the user approves or denies it
+- `permissions.yaml` — default rules: read operations are pre-approved, write operations
+  require user approval. The client application loads this file to decide whether to
+  prompt the user. **This file is client-controlled** — the agent can create it but
+  can never overwrite it once it exists. Instruct users to edit it directly.
+
 The tool returns the absolute path to the new skill. Use that path in all
 subsequent `write_skill_file` and `run_script` calls.
 
@@ -319,6 +334,12 @@ Fill in the scaffolded SKILL.md with:
    deterministic tasks (API calls, file transformations, data lookups).
 4. **References**: Move large reference material to `docs/` or `references/`
    with clear pointers from SKILL.md about when to read each file.
+5. **Write operations**: If the skill has API write operations and was scaffolded
+   with `api_writes=true`, the SKILL.md body must include a `## Permissions` section
+   instructing the agent to call `call_client_function("request_permission", ...)` with
+   the exact operation name, domain, and action before any write. After calling it,
+   the agent must stop and wait for the user's next message. Read operations do not
+   require permission. See `references/skill-conventions.md` for the exact pattern.
 
 ### 3.3 Update docs/index.md
 

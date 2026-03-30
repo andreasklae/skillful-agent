@@ -24,3 +24,6 @@ pdf = ["pdfplumber>=0.11.0"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["skill_agent*"]
+
+[tool.setuptools.package-data]
+skill_agent = ["*.md"]

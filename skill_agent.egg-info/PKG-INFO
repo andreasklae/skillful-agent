@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: skill-agent
+Version: 0.1.0
+Summary: A pydantic-ai based SDK for building AI agents with progressive skill disclosure.
+Requires-Python: >=3.12
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pydantic-ai-slim[duckduckgo,exa,openrouter,tavily,web]>=1.73.0
+Requires-Dist: pydantic-ai[a2a,dbos,examples,outlines-llamacpp,outlines-mlxlm,outlines-sglang,outlines-transformers,outlines-vllm-offline,prefect,sentence-transformers,voyageai]>=1.73.0
+Requires-Dist: python-dotenv
+Provides-Extra: examples
+Requires-Dist: wikipedia-api>=0.8.0; extra == "examples"
+Provides-Extra: pdf
+Requires-Dist: pdfplumber>=0.11.0; extra == "pdf"

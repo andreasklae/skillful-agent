@@ -36,15 +36,68 @@ description: >
 
 ```
 skill-name/
-├── SKILL.md          # Required. Core instructions.
-├── scripts/          # Executable code for deterministic/repetitive tasks
-├── references/       # Docs loaded into context as needed
-├── assets/           # Files used in output (templates, icons, fonts)
-├── docs/             # Supplementary documentation (knowledge bases)
-└── tests/            # Test cases and results
+├── SKILL.md                # Required. Core instructions.
+├── client_functions.json   # Optional. Client-side functions the agent can request.
+├── permissions.yaml        # Optional. Default permission rules for this skill's operations.
+├── scripts/                # Executable code for deterministic/repetitive tasks
+├── references/             # Docs loaded into context as needed
+├── assets/                 # Files used in output (templates, icons, fonts)
+├── docs/                   # Supplementary documentation (knowledge bases)
+└── tests/                  # Test cases and results
 ```
 
-Only `SKILL.md` is required. Add other directories as needed.
+Only `SKILL.md` is required. Add other directories and files as needed.
+
+---
+
+## Client-Side Functions (`client_functions.json`)
+
+Skills that expose operations which should be gated by the client (e.g. write operations
+on external APIs, destructive actions, operations needing user confirmation) should declare
+a `client_functions.json` file.
+
+```json
+[
+  {
+    "name": "request_permission",
+    "description": "Request user permission to execute a write operation.",
+    "awaits_user": true,
+    "parameters": [
+      { "name": "operation", "type": "string", "description": "The operation name.",  "required": true },
+      { "name": "domain",    "type": "string", "description": "The domain/category.", "required": true },
+      { "name": "action",    "type": "string", "description": "The action type (insert, update, delete, etc.).", "required": true }
+    ]
+  }
+]
+```
+
+The SKILL.md body should instruct the agent to call `call_client_function` before any
+write operation, passing the exact operation name, domain, and action type. After calling
+it with `awaits_user: true`, the agent must stop and wait for the user's next message.
+
+---
+
+## Permission Manifest (`permissions.yaml`)
+
+For skills that expose APIs or services with write capabilities, include a `permissions.yaml`
+that declares the default allow/deny rules for the skill's operations. This is loaded by
+the client application and controls which operations require user approval.
+
+```yaml
+default_allow: false
+
+rules:
+  # Read operations are pre-approved — no user prompt needed
+  - domains: ["*"]
+    actions: ["query", "read", "search", "count"]
+    allow: true
+  # Write operations require user approval (default_allow: false handles this)
+```
+
+**Important:** `permissions.yaml` is client-controlled configuration. The agent may
+*create* it (when it doesn't exist yet during scaffolding), but can never *overwrite*
+an existing one. Users must edit it directly. This is enforced by the SDK's
+`write_skill_file` tool and the `write_skill_content.py` script.
 
 ---
 

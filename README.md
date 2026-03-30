@@ -159,6 +159,7 @@ Every event has a `type` string literal field, making them easy to route in any 
 | `ToolResultEvent` | `"tool_result"` | Tool name |
 | `TextDeltaEvent` | `"text_delta"` | Incremental answer text (streamed chunk; not necessarily a single model token) |
 | `RunCompleteEvent` | `"run_complete"` | Final token usage (`usage`) |
+| `ClientFunctionRequestEvent` | `"client_function_request"` | One or more client function requests (see below) |
 
 Serialize any event with `event.model_dump_json()` (Python) — same shapes you would put in an SSE `data:` line.
 
@@ -256,6 +257,60 @@ Illustrative only; real `args` come from the model. `status` on todo items is al
 }
 ```
 
+**`client_function_request`**
+
+```json
+{
+  "type": "client_function_request",
+  "requests": [
+    {
+      "name": "confirm_action",
+      "args": { "action": "delete all records", "details": "This cannot be undone." },
+      "skill_name": "my_skill",
+      "awaits_user": true
+    }
+  ]
+}
+```
+
+### Handling client function requests in your UI
+
+When a skill declares a `client_functions.json`, the agent will emit `ClientFunctionRequestEvent`
+events on the stream. **Your client is responsible for handling them** — the SDK only delivers the
+request; it does not execute the function or render any UI.
+
+The standard pattern:
+
+```python
+from skill_agent.models import ClientFunctionRequestEvent
+
+state = {}
+
+async for event in agent.run_stream(prompt):
+    if event.type == "client_function_request":
+        for req in event.requests:
+            result = handle_client_function(req.name, req.args)
+            if req.awaits_user:
+                # Agent has stopped — send the result as the next user message
+                state["pending_response"] = result
+
+# After the stream ends, resume if there's a pending response
+if "pending_response" in state:
+    async for event in agent.run_stream(state["pending_response"]):
+        ...  # handle normally
+```
+
+If `req.awaits_user` is `False`, the event is informational — the agent continues on its own.
+
+**In a web UI**, translate `client_function_request` events into whatever your interface needs:
+a modal dialog, a toast notification, a confirmation button, or a side-panel. The response goes
+back as the user's next message.
+
+**In a streaming API (FastAPI SSE)**, forward the event to the frontend and wait for the user's
+response before resuming the agent.
+
+---
+
 ### FastAPI SSE example
 
 ```python
@@ -285,19 +340,159 @@ source.addEventListener("tool_call",   e => logToolCall(JSON.parse(e.data)))
 source.addEventListener("run_complete", () => source.close())
 ```
 
+## Client-side functions
+
+Skills can expose functions that execute on the **client**, not inside the agent. The agent requests them via a validated tool call; the SDK emits a `ClientFunctionRequestEvent` on the stream; the client handles execution however it wants (prompting the user, calling an API, updating local state, etc.).
+
+This is a general-purpose escape hatch for anything that belongs outside the agent loop.
+
+### Declaring a client function
+
+Add a `client_functions.json` file to your skill directory:
+
+```json
+[
+  {
+    "name": "confirm_action",
+    "description": "Ask the user to confirm a potentially destructive action before proceeding.",
+    "awaits_user": true,
+    "parameters": [
+      { "name": "action",  "type": "string", "description": "Human-readable description of the action.", "required": true },
+      { "name": "details", "type": "string", "description": "Additional context for the user.",           "required": false }
+    ]
+  }
+]
+```
+
+Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Unique function name within the skill |
+| `description` | string | Shown to the agent so it knows when to call this |
+| `awaits_user` | bool | If `true`, the agent stops and waits for the user's next message after calling |
+| `parameters` | array | Declared schema — the SDK validates the agent's call against this |
+
+### How the agent calls it
+
+After loading the skill, the agent sees the declared functions in the `use_skill` response. When it wants to invoke one it calls the built-in `call_client_function` tool:
+
+```
+call_client_function(
+    skill_name="my_skill",
+    function_name="confirm_action",
+    args={"action": "delete all records", "details": "This cannot be undone."}
+)
+```
+
+The SDK validates the call (skill exists, function exists, required args present) before queuing the request. Invalid calls return an error string to the agent instead of emitting an event.
+
+### Handling the event on the client
+
+```python
+from skill_agent.models import ClientFunctionRequestEvent
+
+async for event in agent.run_stream(prompt):
+    if event.type == "client_function_request":
+        for req in event.requests:
+            if req.name == "confirm_action":
+                # req.args contains whatever the agent passed
+                answer = input(f"Confirm: {req.args['action']}? [y/n] ")
+                # If awaits_user=True, send the result back as the next user message
+                if answer.lower() == "y":
+                    await send_next_turn(agent, "Confirmed. Proceed.")
+                else:
+                    await send_next_turn(agent, "Cancelled. Do not proceed.")
+```
+
+If `awaits_user=True`, the agent has already stopped — your client sends a follow-up message to resume the run. If `awaits_user=False`, the agent continues on its own; the event is informational only.
+
+Multiple functions can be requested in a single event (`event.requests` is a list).
+
+### `client_function_request` event shape
+
+```json
+{
+  "type": "client_function_request",
+  "requests": [
+    {
+      "name": "confirm_action",
+      "args": { "action": "delete all records", "details": "This cannot be undone." },
+      "skill_name": "my_skill",
+      "awaits_user": true
+    }
+  ]
+}
+```
+
+### Pairing with `permissions.yaml`
+
+For skills that gate write operations behind user approval, add a `permissions.yaml`
+alongside `client_functions.json`. This file is loaded by your client application to
+decide whether to prompt the user or approve silently:
+
+```yaml
+# permissions.yaml — client-controlled; agent can create but never overwrite
+default_allow: false
+
+rules:
+  - domains: ["*"]
+    actions: ["query", "read", "search", "list"]
+    allow: true   # reads pre-approved, no prompt
+  # writes fall through to default_allow: false → user is prompted
+```
+
+Load it in your client:
+
+```python
+from permissions import PermissionManifest
+
+manifest = PermissionManifest.from_yaml(Path("skills/my_skill/permissions.yaml"))
+
+def handle_client_function(name, args):
+    if name == "request_permission":
+        operation = args["operation"]
+        domain = args["domain"]
+        action = args["action"]
+        if manifest.is_allowed(operation, domain, action):
+            return f"Permission pre-approved for '{operation}'. Proceed."
+        # Prompt the user, then:
+        manifest.grant(operation)   # session-only grant
+        return f"Permission granted for '{operation}'. Proceed."
+```
+
+**The agent cannot overwrite `permissions.yaml` once it exists.** This is enforced by the
+SDK's `write_skill_file` tool and the learner's `write_skill_content.py` script. Users must
+edit the file directly to change rules.
+
+### Skill directory with a client function
+
+```
+my_skill/
+├── SKILL.md
+├── client_functions.json   ← declares functions the agent can request
+├── permissions.yaml        ← client-controlled permission rules (optional)
+├── scripts/
+├── references/
+└── assets/
+```
+
+---
+
 ## Creating a skill
 
 A skill is a folder with a `SKILL.md` file. Drop it into your skills directory and the agent picks it up automatically on next init.
 
 ```
 my_skill/
-├── SKILL.md         (required — YAML frontmatter + markdown instructions)
-├── scripts/         (optional — Python scripts the LLM can run via run_script)
-├── references/      (optional — docs the LLM can read via read_reference)
-└── assets/          (optional — templates, icons, etc.)
+├── SKILL.md                 (required — YAML frontmatter + markdown instructions)
+├── client_functions.json    (optional — client-side functions the agent can request)
+├── scripts/                 (optional — Python scripts the LLM can run via run_script)
+├── references/              (optional — docs the LLM can read via read_reference)
+└── assets/                  (optional — templates, icons, etc.)
 ```
 
-The recommended way to create a skill is to use the **skill-creator** skill — just ask it to create the skill you need.
+The recommended way to create a skill is to use the **learner** skill. For skills that wrap an API or service with write operations, scaffold with `api_writes=true` to automatically generate `client_functions.json` and `permissions.yaml`.
 
 ## Built-in tools
 
@@ -309,6 +504,7 @@ Every agent run has these tools available automatically:
 | `manage_todos` | Plan and track an internal task list |
 | `read_reference` | Read a doc from a skill's `references/` directory |
 | `run_script` | Run a Python script from a skill's `scripts/` directory |
+| `call_client_function` | Request execution of a function declared in `client_functions.json` |
 | `read_user_file` | *(Optional)* Read UTF-8 text from disk under `AgentConfig.user_file_roots` |
 
 `read_user_file` is registered only when `user_file_roots` is non-empty.

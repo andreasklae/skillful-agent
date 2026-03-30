@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+skill_agent/__init__.py
+skill_agent/agent.py
+skill_agent/models.py
+skill_agent/registry.py
+skill_agent/system_prompt.md
+skill_agent/user_prompt_files.py
+skill_agent.egg-info/PKG-INFO
+skill_agent.egg-info/SOURCES.txt
+skill_agent.egg-info/dependency_links.txt
+skill_agent.egg-info/requires.txt
+skill_agent.egg-info/top_level.txt

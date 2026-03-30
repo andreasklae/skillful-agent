@@ -926,17 +926,6 @@ def _create_runner(
         else:
             return "Provide either (skill_name + path) or file_path."
 
-        # Blocklist: certain files must never be overwritten by the agent.
-        # permissions.yaml is client-controlled configuration — only the user
-        # (or client code) should modify it. The agent may CREATE it (when it
-        # doesn't exist yet) but cannot overwrite an existing one.
-        _WRITE_BLOCKLIST = {"permissions.yaml"}
-        if target.name in _WRITE_BLOCKLIST and target.exists():
-            return (
-                f"'{target.name}' is client-controlled configuration and cannot be "
-                f"overwritten by the agent. Ask the user to edit it directly."
-            )
-
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             if append:

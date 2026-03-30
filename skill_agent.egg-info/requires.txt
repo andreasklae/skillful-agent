@@ -1,0 +1,10 @@
+pydantic>=2.0
+pydantic-ai-slim[duckduckgo,exa,openrouter,tavily,web]>=1.73.0
+pydantic-ai[a2a,dbos,examples,outlines-llamacpp,outlines-mlxlm,outlines-sglang,outlines-transformers,outlines-vllm-offline,prefect,sentence-transformers,voyageai]>=1.73.0
+python-dotenv
+
+[examples]
+wikipedia-api>=0.8.0
+
+[pdf]
+pdfplumber>=0.11.0

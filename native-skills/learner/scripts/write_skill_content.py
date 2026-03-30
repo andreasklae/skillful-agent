@@ -45,6 +45,18 @@ def main() -> None:
         sys.exit(1)
 
     target = Path(file_path).resolve()
+
+    # Blocklist: permissions.yaml is client-controlled — the agent may create it
+    # but must not overwrite an existing one.
+    _WRITE_BLOCKLIST = {"permissions.yaml"}
+    if target.name in _WRITE_BLOCKLIST and target.exists():
+        print(
+            f"Error: '{target.name}' is client-controlled configuration and cannot be "
+            f"overwritten by the agent. Ask the user to edit it directly.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if append:

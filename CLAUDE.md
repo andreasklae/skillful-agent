@@ -16,16 +16,18 @@ A pydantic-ai based SDK for building AI agents with progressive skill disclosure
 2. System prompt contains skill **descriptions only** (lightweight)
 3. LLM calls `use_skill` to load the full skill body + see available resources
 4. LLM uses `run_script` / `read_reference` to access bundled resources
-5. Returns typed `AgentResult` with answer, activated skills, tool log, todo list, usage
+5. LLM calls `call_client_function` to request client-side execution; SDK emits `ClientFunctionRequestEvent`
+6. Returns typed `AgentResult` with answer, activated skills, tool log, todo list, usage
 
 ## Skill Structure
 
 ```
 skill-name/
-├── SKILL.md         # Instructions (required)
-├── scripts/         # Executable code (optional)
-├── references/      # Docs loaded into context (optional)
-└── assets/          # Templates, icons, etc. (optional)
+├── SKILL.md                # Instructions (required)
+├── client_functions.json   # Client-side function declarations (optional)
+├── scripts/                # Executable code (optional)
+├── references/             # Docs loaded into context (optional)
+└── assets/                 # Templates, icons, etc. (optional)
 ```
 
 ## Running
