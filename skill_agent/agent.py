@@ -840,7 +840,9 @@ def _create_runner(
         if not script_path.exists():
             return json.dumps({"ok": False, "stdout": "", "stderr": f"File not found on disk: {script_path}", "exit_code": 2})
 
-        # Run the script in a subprocess with a 30-second timeout.
+        # Run the script in a subprocess with a 90-second timeout.
+        # SOAP services (e.g. Easyflex) can take 10–30 s to fetch the WSDL
+        # on first call, before the actual query even starts.
         # Args are passed BOTH as argv[1] (backwards compat for short args)
         # AND piped via stdin (reliable for large content / special chars).
         # Scripts can read from either: sys.argv[1] or sys.stdin.read().
@@ -856,14 +858,14 @@ def _create_runner(
                 input=args or None,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=90,
                 cwd=None,  # inherit the agent process's cwd so relative paths in args resolve correctly
             )
             stdout, stderr = proc.stdout or "", proc.stderr or ""
             exit_code = proc.returncode
             ok = proc.returncode == 0
         except subprocess.TimeoutExpired:
-            stderr, exit_code = "Script timed out after 30 seconds.", 124
+            stderr, exit_code = "Script timed out after 90 seconds.", 124
         except Exception as e:
             stderr, exit_code = f"Error running script: {e}", 1
 
