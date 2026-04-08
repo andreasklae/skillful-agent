@@ -322,3 +322,7 @@ class AgentConfig(BaseModel):
         default=400_000,
         description="Truncate inlined text/PDF content from run(..., files=...). None = no limit.",
     )
+    context_compression_threshold: int = Field(
+        default=100_000,
+        description="Auto-compress context_window when input_tokens exceeds this threshold.",
+    )
