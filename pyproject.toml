@@ -27,3 +27,8 @@ include = ["skill_agent*"]
 
 [tool.setuptools.package-data]
 skill_agent = ["*.md"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

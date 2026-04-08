@@ -8,24 +8,21 @@ Public API:
     ToolResultEvent   — Tool completion
     TextDeltaEvent    — Answer token from the model
     RunCompleteEvent  — Final event (token usage); conversation memory lives on Agent
+    ClientFunctionRequestEvent — Client function request from skill
     Skill             — Skill metadata model (name, description, body, resources)
     AgentConfig       — Optional configuration (max_tokens, max_turns, etc.)
     AgentResult       — Typed return value from agent.run()
-
-Usage:
-    from pathlib import Path
-    from skill_agent import Agent
-
-    agent = Agent(model=model, skills_dir=Path("skills"))
-
-    # Blocking
-    result = agent.run("Who invented the telephone?")
-    print(result.answer)
-
-    # Streaming (async)
-    async for event in agent.run_stream("Who invented the telephone?"):
-        if isinstance(event, TextDeltaEvent):
-            print(event.content, end="", flush=True)
+    Message           — Structured message in the conversation log
+    MessageType       — Enum of message roles
+    SourceContext     — Base class for message origin
+    UIContext         — UI-originated message
+    EmailContext      — Email-originated message
+    SubAgentContext   — Subagent-originated message
+    Inbox             — In-memory inbox for inter-agent communication
+    InboxItem         — One item in an inbox
+    Thread            — Scoped view of inbox items sharing a thread_id
+    ThreadStatus      — Lifecycle status enum for threads
+    SubAgent          — Scoped worker agent communicating via inbox
 """
 
 from .agent import Agent
@@ -47,6 +44,21 @@ from .models import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from .messages import (
+    Message,
+    MessageType,
+    SourceContext,
+    UIContext,
+    EmailContext,
+    SubAgentContext,
+)
+from .inbox import (
+    Inbox,
+    InboxItem,
+    Thread,
+    ThreadStatus,
+)
+from .subagent import SubAgent
 
 __all__ = [
     "Agent",
@@ -66,4 +78,15 @@ __all__ = [
     "TodoUpdateEvent",
     "ToolCallEvent",
     "ToolResultEvent",
+    "Message",
+    "MessageType",
+    "SourceContext",
+    "UIContext",
+    "EmailContext",
+    "SubAgentContext",
+    "Inbox",
+    "InboxItem",
+    "Thread",
+    "ThreadStatus",
+    "SubAgent",
 ]
