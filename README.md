@@ -8,20 +8,27 @@ The agent loads skill **descriptions** into its system prompt, but only fetches 
 
 ```
 skills/                          skill_agent/ (the SDK)
-  my_skill/                        agent.py    — agent loop + built-in tools
-    SKILL.md                       models.py   — all data models and event types
-    scripts/                       registry.py — discovers SKILL.md files on disk
-    references/
-    assets/
+  my_skill/                        agent.py         — agent loop + event stream
+    SKILL.md                       models.py        — data models and event types
+    scripts/                       messages.py      — Message model, SourceContext hierarchy
+    references/                    inbox.py         — Inbox, InboxItem, Thread, ThreadStatus
+    assets/                        skill_tools.py   — skill tools (use_skill, run_script, etc.)
+                                   context_tools.py — context window management tools
+                                   inbox_tools.py   — inbox + spawn tools
+                                   subagent.py      — SubAgent class
+                                   registry.py      — discovers SKILL.md files on disk
 ```
 
 At runtime:
 
 ```
 Agent(model, skills_dir)
-  └─ run(prompt, files=[...])        → AgentResult
-  └─ run_stream(prompt, files=[...]) → AsyncGenerator[AgentEvent, ...]
-  └─ clear_conversation() — forget prior turns (optional)
+  ├─ run(prompt, files=[...])        → AgentResult
+  ├─ run_stream(prompt, files=[...]) → AsyncGenerator[AgentEvent, ...]
+  ├─ clear_conversation()            — forget prior turns (optional)
+  ├─ inbox                           — Inbox for inter-agent communication
+  ├─ message_log                     — append-only conversation history
+  └─ context_window                  — mutable working context for the model
 ```
 
 `files=` is optional: attach local paths so the model sees text (inlined), images (vision), or PDF text (see below).
@@ -148,6 +155,98 @@ The system prompt is extended automatically to mention the allowed roots.
 
 For advanced use, the same attachment logic is available as `build_user_message` from `skill_agent` if you need to assemble a user message yourself before calling pydantic-ai directly.
 
+## Message logging
+
+Every message and tool step is recorded as a structured `Message` object in two stores:
+
+- **`agent.message_log`** — append-only, full content, never modified. Source of truth for the entire conversation.
+- **`agent.context_window`** — the mutable working list that gets serialized into the model's message history. Entries can be compressed or removed to manage context size.
+
+```python
+from skill_agent import Message, MessageType
+
+# After a run, inspect the conversation history
+for msg in agent.message_log:
+    print(f"[{msg.type.value}] {str(msg.content)[:80]}")
+
+# Check what the model currently sees
+print(f"Context window: {len(agent.context_window)} messages")
+```
+
+### Context management
+
+The agent has tools to manage its own context window:
+
+- **`compress_message(id, summary)`** — replace a message's content with a short summary
+- **`retrieve_message(id)`** — restore a compressed message from the full log
+- **`compress_all(summary, instruction)`** — replace the entire context window with a single summary
+
+**Auto-compression:** when `input_tokens` exceeds `AgentConfig.context_compression_threshold` (default: 100,000), the runtime automatically compresses the context window using a generic summary derived from the message log.
+
+## Inbox & thread system
+
+Every agent has an inbox for receiving messages from any source — subagents, external services, UI interactions.
+
+```python
+from skill_agent import Inbox, InboxItem, ThreadStatus, UIContext
+
+# The inbox is a first-class public API object
+agent.inbox.create_item(
+    content="New task from the UI",
+    subject="User request",
+    source_context=UIContext(sender="web-app"),
+    notify=True,   # triggers a follow-up run after the current one completes
+)
+
+# Read threads
+for item in agent.inbox.read_thread("thread-id"):
+    print(f"{item.source_context.sender}: {item.content}")
+
+# Subscribe to new items (async generator for UI consumption)
+async for item in agent.inbox.subscribe():
+    update_ui(item)
+```
+
+### Thread status
+
+Every thread has a `status`: `in_progress`, `waiting_for_response`, or `done`. The agent can triage threads by reading subjects and statuses without opening them.
+
+### Inbox notification behavior
+
+- `notify=True` items arriving during a run are queued silently
+- After the run completes, the runtime triggers a follow-up `run("inbox updated")`
+- `notify=False` items never trigger a run
+
+### Source contexts
+
+Each inbox item carries a `SourceContext` describing where it came from:
+
+- `UIContext` — from a UI interaction
+- `EmailContext` — from email (with subject, thread_id, reply_to)
+- `SubAgentContext` — from a subagent (with subagent_id, parent_interaction_id)
+
+New channels are added as `SourceContext` subclasses without modifying existing code.
+
+## Subagents
+
+A `SubAgent` is a scoped worker that shares the parent's model but has its own inbox, message log, and context window. It communicates exclusively through inbox threads — no event streaming.
+
+```python
+# The agent can spawn subagents via the spawn_subagent tool:
+# spawn_subagent(
+#     instructions="Research the history of Python",
+#     system_prompt="You are a research assistant.",
+#     skills=["wikipedia_lookup"],
+#     blocking=False,          # runs concurrently
+#     singleton=True,          # only one "researcher" at a time
+#     singleton_id="researcher",
+# )
+# Returns a thread_id for communication via write_to_thread / read_thread.
+# Use delete_thread to stop a subagent.
+```
+
+Subagents run as `asyncio.Task` instances and wind down gracefully when their thread is deleted.
+
 ## Event types
 
 Every event has a `type` string literal field, making them easy to route in any consumer — a CLI printer, a FastAPI SSE endpoint, or a JavaScript `EventSource`.
@@ -162,154 +261,6 @@ Every event has a `type` string literal field, making them easy to route in any 
 | `ClientFunctionRequestEvent` | `"client_function_request"` | One or more client function requests (see below) |
 
 Serialize any event with `event.model_dump_json()` (Python) — same shapes you would put in an SSE `data:` line.
-
-### Example JSON payloads
-
-Illustrative only; real `args` come from the model. `status` on todo items is always `"pending"`, `"in_progress"`, or `"done"`.
-
-**`todo_update`**
-
-```json
-{
-  "type": "todo_update",
-  "items": [
-    { "id": 1, "content": "Load the relevant skill", "status": "done" },
-    { "id": 2, "content": "Run the lookup script", "status": "in_progress" }
-  ]
-}
-```
-
-**`tool_call`** — `use_skill`
-
-```json
-{
-  "type": "tool_call",
-  "name": "use_skill",
-  "args": { "skill_name": "wikipedia_lookup" },
-  "activity": "Loading the lookup skill"
-}
-```
-
-**`tool_call`** — `manage_todos`
-
-```json
-{
-  "type": "tool_call",
-  "name": "manage_todos",
-  "args": {
-    "action": "set",
-    "payload": { "items": ["Plan step one", "Plan step two"] }
-  },
-  "activity": "Planning the steps"
-}
-```
-
-**`tool_call`** — `read_reference`
-
-```json
-{
-  "type": "tool_call",
-  "name": "read_reference",
-  "args": { "skill_name": "wikipedia_lookup", "filename": "api_notes.md" },
-  "activity": "Opening bundled reference doc"
-}
-```
-
-**`tool_call`** — `run_script`
-
-```json
-{
-  "type": "tool_call",
-  "name": "run_script",
-  "args": {
-    "skill_name": "wikipedia_lookup",
-    "filename": "search.py",
-    "args": "{\"query\": \"example\"}"
-  },
-  "activity": "Running bundled script"
-}
-```
-
-**`tool_result`**
-
-```json
-{
-  "type": "tool_result",
-  "name": "run_script"
-}
-```
-
-**`text_delta`**
-
-```json
-{
-  "type": "text_delta",
-  "content": "Here is a short answer based on the script output."
-}
-```
-
-**`run_complete`**
-
-```json
-{
-  "type": "run_complete",
-  "usage": { "input_tokens": 1200, "output_tokens": 340 }
-}
-```
-
-**`client_function_request`**
-
-```json
-{
-  "type": "client_function_request",
-  "requests": [
-    {
-      "name": "confirm_action",
-      "args": { "action": "delete all records", "details": "This cannot be undone." },
-      "skill_name": "my_skill",
-      "awaits_user": true
-    }
-  ]
-}
-```
-
-### Handling client function requests in your UI
-
-When a skill declares a `client_functions.json`, the agent will emit `ClientFunctionRequestEvent`
-events on the stream. **Your client is responsible for handling them** — the SDK only delivers the
-request; it does not execute the function or render any UI.
-
-The standard pattern:
-
-```python
-from skill_agent.models import ClientFunctionRequestEvent
-
-state = {}
-
-async for event in agent.run_stream(prompt):
-    if event.type == "client_function_request":
-        for req in event.requests:
-            result = handle_client_function(req.name, req.args)
-            if req.awaits_user:
-                # Agent has stopped — send the result as the next user message
-                state["pending_response"] = result
-
-# After the stream ends, resume if there's a pending response
-if "pending_response" in state:
-    async for event in agent.run_stream(state["pending_response"]):
-        ...  # handle normally
-```
-
-If `req.awaits_user` is `False`, the event is informational — the agent continues on its own.
-
-**In a web UI**, translate `client_function_request` events into whatever your interface needs:
-a modal dialog, a toast notification, a confirmation button, or a side-panel. The response goes
-back as the user's next message.
-
-**In a streaming API (FastAPI SSE)**, forward the event to the frontend and wait for the user's
-response before resuming the agent.
-
----
 
 ### FastAPI SSE example
 
@@ -396,9 +347,7 @@ async for event in agent.run_stream(prompt):
     if event.type == "client_function_request":
         for req in event.requests:
             if req.name == "confirm_action":
-                # req.args contains whatever the agent passed
                 answer = input(f"Confirm: {req.args['action']}? [y/n] ")
-                # If awaits_user=True, send the result back as the next user message
                 if answer.lower() == "y":
                     await send_next_turn(agent, "Confirmed. Proceed.")
                 else:
@@ -406,24 +355,6 @@ async for event in agent.run_stream(prompt):
 ```
 
 If `awaits_user=True`, the agent has already stopped — your client sends a follow-up message to resume the run. If `awaits_user=False`, the agent continues on its own; the event is informational only.
-
-Multiple functions can be requested in a single event (`event.requests` is a list).
-
-### `client_function_request` event shape
-
-```json
-{
-  "type": "client_function_request",
-  "requests": [
-    {
-      "name": "confirm_action",
-      "args": { "action": "delete all records", "details": "This cannot be undone." },
-      "skill_name": "my_skill",
-      "awaits_user": true
-    }
-  ]
-}
-```
 
 ### Pairing with `permissions.yaml`
 
@@ -439,45 +370,9 @@ rules:
   - domains: ["*"]
     actions: ["query", "read", "search", "list"]
     allow: true   # reads pre-approved, no prompt
-  # writes fall through to default_allow: false → user is prompted
 ```
 
-Load it in your client:
-
-```python
-from permissions import PermissionManifest
-
-manifest = PermissionManifest.from_yaml(Path("skills/my_skill/permissions.yaml"))
-
-def handle_client_function(name, args):
-    if name == "request_permission":
-        operation = args["operation"]
-        domain = args["domain"]
-        action = args["action"]
-        if manifest.is_allowed(operation, domain, action):
-            return f"Permission pre-approved for '{operation}'. Proceed."
-        # Prompt the user, then:
-        manifest.grant(operation)   # session-only grant
-        return f"Permission granted for '{operation}'. Proceed."
-```
-
-**The agent cannot overwrite `permissions.yaml` once it exists.** This is enforced by the
-SDK's `write_skill_file` tool and the learner's `write_skill_content.py` script. Users must
-edit the file directly to change rules.
-
-### Skill directory with a client function
-
-```
-my_skill/
-├── SKILL.md
-├── client_functions.json   ← declares functions the agent can request
-├── permissions.yaml        ← client-controlled permission rules (optional)
-├── scripts/
-├── references/
-└── assets/
-```
-
----
+**The agent cannot overwrite `permissions.yaml` once it exists.** This is enforced by the SDK's `write_skill_file` tool.
 
 ## Creating a skill
 
@@ -487,6 +382,7 @@ A skill is a folder with a `SKILL.md` file. Drop it into your skills directory a
 my_skill/
 ├── SKILL.md                 (required — YAML frontmatter + markdown instructions)
 ├── client_functions.json    (optional — client-side functions the agent can request)
+├── permissions.yaml         (optional — client-controlled permission rules)
 ├── scripts/                 (optional — Python scripts the LLM can run via run_script)
 ├── references/              (optional — docs the LLM can read via read_reference)
 └── assets/                  (optional — templates, icons, etc.)
@@ -506,8 +402,16 @@ Every agent run has these tools available automatically:
 | `run_script` | Run a Python script from a skill's `scripts/` directory |
 | `call_client_function` | Request execution of a function declared in `client_functions.json` |
 | `read_user_file` | *(Optional)* Read UTF-8 text from disk under `AgentConfig.user_file_roots` |
-
-`read_user_file` is registered only when `user_file_roots` is non-empty.
+| `compress_message` | Compress a context window message to a summary |
+| `retrieve_message` | Restore a compressed message from the log |
+| `compress_all` | Replace entire context window with a summary |
+| `read_inbox` | Check for unread inbox messages |
+| `read_thread` | Read full thread contents by thread_id |
+| `write_to_thread` | Write to a thread (auto-resolves target inbox) |
+| `forward_thread_item` | Forward item to subagent without loading content |
+| `dismiss_inbox_item` | Dismiss an inbox item |
+| `delete_thread` | Delete thread and stop linked subagent |
+| `spawn_subagent` | Spawn a background worker subagent |
 
 ## Configuration
 
@@ -526,6 +430,8 @@ agent = Agent(
         # Optional: allow the model to read files on demand under these directories
         user_file_roots=[Path("data/workspace")],
         max_user_file_read_chars=15000,
+        # Auto-compress context window when input_tokens exceeds this threshold
+        context_compression_threshold=100_000,
     ),
 )
 ```
@@ -533,17 +439,30 @@ agent = Agent(
 ## Project structure
 
 ```
-skills/                  Your skills (not part of the SDK)
+skills/                    Your skills (not part of the SDK)
   wikipedia_lookup/
     SKILL.md
     scripts/lookup.py
-skill_agent/             The SDK package
-  __init__.py            Public API and exports
-  models.py              All data models and event types
-  agent.py               Agent loop, built-in tools, event stream
-  registry.py            Skill discovery from disk
-  user_prompt_files.py   Build user messages with optional file attachments
-  system_prompt.md       Default system prompt template (loaded by agent.py)
-Example.py               Runnable example (includes a simple CLI event consumer)
+skill_agent/               The SDK package
+  __init__.py              Public API and exports
+  agent.py                 Agent class, event stream, system prompt, runner factory
+  models.py                Data models and event types (Skill, AgentConfig, AgentResult, etc.)
+  messages.py              Message model, MessageType, SourceContext hierarchy
+  inbox.py                 Inbox, InboxItem, Thread, ThreadStatus
+  skill_tools.py           Skill tools (use_skill, manage_todos, run_script, etc.)
+  context_tools.py         Context management tools (compress, retrieve, compress_all)
+  inbox_tools.py           Inbox tools + spawn_subagent
+  subagent.py              SubAgent class
+  registry.py              Skill discovery from disk
+  user_prompt_files.py     Build user messages with optional file attachments
+  system_prompt.md         Default system prompt template (loaded by agent.py)
+tests/                     Test suite (48 tests)
+Example.py                 Runnable example (includes a simple CLI event consumer)
 pyproject.toml
+```
+
+## Testing
+
+```bash
+uv run pytest tests/ -v
 ```
