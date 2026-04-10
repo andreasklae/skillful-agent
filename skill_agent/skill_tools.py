@@ -104,21 +104,22 @@ def _parse_todo_status(raw: Any) -> TodoStatus | None:
         return None
 
 
+ActivityDesc = Annotated[
+    str,
+    Field(
+        description=(
+            "Very short plain-language phrase for the user interface describing what you are doing "
+            "with this tool call."
+        ),
+    ),
+]
+
+
 # ── Tool registration ────────────────────────────────────────────────
 
 
 def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None:
     """Register all skill-related tools on the pydantic-ai runner."""
-
-    ActivityDesc = Annotated[
-        str,
-        Field(
-            description=(
-                "Very short plain-language phrase for the user interface describing what you are doing "
-                "with this tool call."
-            ),
-        ),
-    ]
 
     # ── use_skill ─────────────────────────────────────────────────────
 

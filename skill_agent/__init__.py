@@ -18,11 +18,11 @@ Public API:
     UIContext         — UI-originated message
     EmailContext      — Email-originated message
     SubAgentContext   — Subagent-originated message
-    Inbox             — In-memory inbox for inter-agent communication
-    InboxItem         — One item in an inbox
-    Thread            — Scoped view of inbox items sharing a thread_id
-    ThreadStatus      — Lifecycle status enum for threads
-    SubAgent          — Scoped worker agent communicating via inbox
+    Thread            — Bidirectional message channel
+    ThreadMessage     — One message in a thread
+    ThreadRole        — Who authored a thread message
+    ThreadStatus      — Lifecycle status of a thread
+    ThreadRegistry    — Manages all threads for an agent
 """
 
 from .agent import Agent
@@ -52,13 +52,13 @@ from .messages import (
     EmailContext,
     SubAgentContext,
 )
-from .inbox import (
-    Inbox,
-    InboxItem,
+from .threads import (
     Thread,
+    ThreadMessage,
+    ThreadRole,
     ThreadStatus,
+    ThreadRegistry,
 )
-from .subagent import SubAgent
 
 __all__ = [
     "Agent",
@@ -84,9 +84,9 @@ __all__ = [
     "UIContext",
     "EmailContext",
     "SubAgentContext",
-    "Inbox",
-    "InboxItem",
     "Thread",
+    "ThreadMessage",
+    "ThreadRole",
     "ThreadStatus",
-    "SubAgent",
+    "ThreadRegistry",
 ]
