@@ -1,6 +1,6 @@
-"""Tests that Agent has message_log, context_window, and inbox wired up."""
+"""Tests that Agent has message_log, context_window, and thread_registry wired up."""
 from skill_agent.messages import Message, MessageType
-from skill_agent.inbox import Inbox
+from skill_agent.threads import ThreadRegistry
 
 
 def test_rundeps_has_new_fields():
@@ -8,14 +8,12 @@ def test_rundeps_has_new_fields():
 
     deps = _RunDeps(
         skills={},
-        inbox=Inbox(),
+        thread_registry=ThreadRegistry(),
         message_log=[],
         context_window=[],
-        active_subagents={},
         context_compression_threshold=100_000,
     )
-    assert isinstance(deps.inbox, Inbox)
+    assert isinstance(deps.thread_registry, ThreadRegistry)
     assert deps.message_log == []
     assert deps.context_window == []
-    assert deps.active_subagents == {}
     assert deps.context_compression_threshold == 100_000

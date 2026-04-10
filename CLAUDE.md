@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A pydantic-ai based SDK for building AI agents with progressive skill disclosure. The agent discovers skills from a user-provided directory, loads them on demand, and uses bundled resources (scripts, references, assets) to complete tasks. Includes structured message logging, context window management, an inbox/thread system for inter-agent communication, and subagent spawning.
+A pydantic-ai based SDK for building AI agents with progressive skill disclosure. The agent discovers skills from a user-provided directory, loads them on demand, and uses bundled resources (scripts, references, assets) to complete tasks. Includes structured message logging, context window management, a thread-based communication system for inter-agent communication, and subagent spawning via plain Agent instances.
 
 ## Commands
 
@@ -12,8 +12,10 @@ A pydantic-ai based SDK for building AI agents with progressive skill disclosure
 uv sync                    # Install dependencies
 uv sync --extra pdf        # Include PDF extraction support
 uv sync --extra examples   # Include example skill dependencies (wikipedia-api)
+uv sync --extra server     # Include FastAPI server dependencies
 uv run Example.py          # Run the example CLI agent
-uv run pytest tests/ -v    # Run the test suite (48 tests)
+uv run run_server.py       # Run the HTTP server
+uv run pytest tests/ -v    # Run the test suite (70 tests)
 ```
 
 No linter is configured in pyproject.toml.
@@ -22,27 +24,42 @@ No linter is configured in pyproject.toml.
 
 ### Core SDK (`skill_agent/`)
 
-- **`agent.py`** — Agent class with `run()` (blocking) and `run_stream()` (async generator). Wraps pydantic-ai's `Agent` under the hood. Maintains conversation state, dual message stores, inbox, and subagent tracking. Per-run mutable state lives in the `_RunDeps` dataclass passed via `RunContext.deps`. `_RunDeps` fields are **references** to Agent instance attributes, not copies.
+- **`agent.py`** — `Agent` class with `run()` (blocking), `run_stream()` (async generator), `enqueue_run()` / `enqueue_run_message()` (async queue), `subscribe_run()` / `subscribe_all_runs()` (SSE subscriptions). Maintains conversation state, dual message stores, thread registry, and run queue. Per-run mutable state lives in the `_RunDeps` dataclass injected via `RunContext.deps`. `_RunDeps` fields are **references** to Agent instance attributes, not copies.
 - **`models.py`** — All Pydantic models: `Skill`, `AgentConfig`, `AgentResult`, all event types (`AgentEvent` discriminated union), `TodoItem`, `ToolCallRecord`, `ClientFunction`/`ClientFunctionRequest`, `TokenUsage`.
-- **`messages.py`** — `Message` model (id, timestamp, type, content, summary) and `SourceContext` hierarchy (`UIContext`, `EmailContext`, `SubAgentContext`). Every conversation step is a Message.
-- **`inbox.py`** — `Inbox`, `InboxItem`, `Thread`, `ThreadStatus`. General-purpose message routing for inter-agent and external communication. Exposed as `Agent.inbox`.
-- **`skill_tools.py`** — Skill tools extracted from agent.py: `use_skill`, `register_skill`, `scaffold_skill`, `manage_todos`, `read_reference`, `run_script`, `write_skill_file`, `read_user_file`, `call_client_function`.
-- **`context_tools.py`** — `compress_message`, `retrieve_message`, `compress_all`. Manage context window size by compressing messages to summaries. Auto-compression triggers when `input_tokens` exceeds `AgentConfig.context_compression_threshold` (default 100k).
-- **`inbox_tools.py`** — `read_inbox`, `read_thread`, `write_to_thread`, `forward_thread_item`, `dismiss_inbox_item`, `delete_thread`, `spawn_subagent`. Registered as pydantic-ai tools.
-- **`subagent.py`** — `SubAgent` class. Shares parent's model, communicates via inbox threads, runs as `asyncio.Task`.
+- **`messages.py`** — `Message` model (id, timestamp, type, content, summary) and `SourceContext` hierarchy (`UIContext`, `EmailContext`, `SubAgentContext`). Every conversation step is logged as a `Message`.
+- **`threads.py`** — `Thread`, `ThreadMessage`, `ThreadRole`, `ThreadStatus`, `ThreadRegistry`, `ThreadEvent`. Bidirectional message channels. `send()` = participant-authored (inbound, fires inbound listeners). `reply()` = agent-authored (outbound, fires outbound listeners). `ThreadMessage.events` carries the serialized `AgentEvent` list for the run that produced the message.
+- **`thread_tools.py`** — `read_thread`, `reply_to_thread`, `archive_thread`, `spawn_agent`. Registered as pydantic-ai tools. `spawn_agent` creates a plain `Agent` instance and wires bidirectional listeners: outbound (parent→subagent via `thread.reply()`) and inbound notification (subagent→parent via `thread.send()` → `_register_thread_notification`). The event loop is captured at spawn time and stored in the closure.
+- **`skill_tools.py`** — `use_skill`, `manage_todos`, `read_reference`, `run_script`, `write_skill_file`, `read_user_file`, `call_client_function`.
+- **`context_tools.py`** — `compress_message`, `retrieve_message`, `compress_all`. Auto-compression triggers when `input_tokens` exceeds `AgentConfig.context_compression_threshold` (default 100k).
 - **`registry.py`** — `discover_skills()` recursively scans directories for `SKILL.md` files with YAML-like frontmatter. Custom frontmatter parser (no PyYAML dependency). Also loads `client_functions.json` if present.
 - **`user_prompt_files.py`** — `build_user_message()` turns text + file paths into pydantic-ai message parts (text inlined, images as `BinaryContent`, PDFs extracted via pdfplumber).
-- **`__init__.py`** — Public API re-exports. Everything consumers need is importable from `skill_agent`.
+- **`__init__.py`** — Public API re-exports.
+
+### Server (`server/`)
+
+FastAPI app with `create_app(agent=None)` factory pattern for dependency injection and testability.
+
+- **`app.py`** — `create_app()` wires the agent as a dependency, registers all routers, configures CORS.
+- **`dependencies.py`** — `get_agent()` FastAPI dependency.
+- **`config.py`** — Server configuration loaded from environment / Azure Key Vault.
+- **`routes/runs.py`** — `POST /run` (queue + SSE stream), `GET /runs/subscribe` (global SSE).
+- **`routes/threads.py`** — `GET /threads`, `GET /threads/subscribe` (SSE), `GET /threads/{name}`, `POST /threads/{name}/messages`.
+- **`routes/skills.py`** — `GET /skills`, `POST /skills/upload`.
+- **`routes/health.py`** — `GET /health`.
+- **`services/sse.py`** — `format_run_envelope_sse()` formats run envelopes as SSE strings.
+- **`models.py`** — Request/response Pydantic models. `ThreadItemResponse` and `ThreadMessageResponse` include an `events: list[dict]` field carrying the per-message event log.
 
 ### Key Design Decisions
 
-- **Progressive disclosure**: System prompt includes only skill names + descriptions. Full SKILL.md body is loaded only when the LLM calls `use_skill`. This keeps token usage low regardless of skill count.
-- **Two skill sources**: Native skills ship with the SDK from `native-skills/` (adjacent to the package). User skills come from the `skills_dir` argument. User skills override native skills with the same name.
-- **Event-driven streaming**: Both `run()` and `run_stream()` produce the same `AgentEvent` types. Events have a `type` literal discriminator for easy routing (SSE, CLI, React).
-- **Client functions**: Skills can declare functions in `client_functions.json` that execute on the client side. The SDK validates calls and emits `ClientFunctionRequestEvent`; the client handles execution. `permissions.yaml` gates write operations.
-- **Dual message stores**: `message_log` (append-only source of truth) and `context_window` (mutable working set for the model). Messages can be compressed to summaries while preserving the full history.
-- **Inbox-based communication**: All inter-agent and external communication flows through inboxes. Each agent/subagent has its own inbox. `write_to_thread` auto-resolves the target inbox (subagent vs self) based on thread_id.
-- **Tool registration refactor**: Tools are organized into focused files (`skill_tools.py`, `context_tools.py`, `inbox_tools.py`) with `register_*_tools(runner)` functions. `_create_runner` in `agent.py` is a slim coordinator that calls each.
+- **Progressive disclosure**: System prompt includes only skill names + descriptions. Full SKILL.md body is loaded only when the LLM calls `use_skill`.
+- **Two skill sources**: Native skills ship with the SDK from `native-skills/`. User skills come from `skills_dir`. User skills override native skills with the same name.
+- **Thread-based communication**: All inter-agent and external communication flows through named threads. `send()` = participant-authored (inbound). `reply()` = agent-authored (outbound). The asymmetry is intentional — the parent agent is the "agent" side of subagent threads, the subagent is the "participant".
+- **Main thread mirrors context_window**: The `"main"` thread is not a separate store. `thread_registry.get("main").reply(answer)` is called at run completion to attach the answer and its event log to the thread, but the actual storage is `context_window`.
+- **Event loop captured at spawn time**: The outbound listener in `spawn_agent_impl` may fire from inside a sync pydantic-ai tool context. `asyncio.get_running_loop()` may fail there. The loop is captured when `spawn_agent_impl` is called (always async) and stored in the closure.
+- **Coalesce key released at run start**: Thread notification coalesce keys are discarded when a run is picked up from the queue (not when it finishes). This ensures a second notification arriving during an active run queues a new run rather than being dropped.
+- **Null content sanitization**: pydantic-ai sets `content=null` on assistant messages with only tool calls and no text. Some models reject this. A `TextPart(content="")` is injected into any such `ModelResponse` before passing history to the model.
+- **Per-message event logs**: Every `ThreadMessage.events` carries the serialized `AgentEvent` list for the run that produced it. Both `GET /threads/{name}` and `GET /threads/subscribe` expose this to the frontend.
+- **Run queue anti-flood**: `_auto_thread_run_counts` tracks auto-triggered runs per thread (max 10). Counts clear when a user-initiated run completes.
 
 ### Built-in Tools
 
@@ -57,13 +74,26 @@ No linter is configured in pyproject.toml.
 | `compress_message` | context_tools.py | Compress a context window message to a summary |
 | `retrieve_message` | context_tools.py | Restore a compressed message from the log |
 | `compress_all` | context_tools.py | Replace entire context window with a summary |
-| `read_inbox` | inbox_tools.py | Check for unread inbox messages |
-| `read_thread` | inbox_tools.py | Read full thread contents |
-| `write_to_thread` | inbox_tools.py | Write to a thread (auto-resolves target inbox) |
-| `forward_thread_item` | inbox_tools.py | Forward item to subagent without loading content |
-| `dismiss_inbox_item` | inbox_tools.py | Dismiss an inbox item |
-| `delete_thread` | inbox_tools.py | Delete thread and stop linked subagent |
-| `spawn_subagent` | inbox_tools.py | Spawn a background worker subagent |
+| `read_thread` | thread_tools.py | Read full thread contents by name |
+| `reply_to_thread` | thread_tools.py | Send ONE message to a thread, then end turn (triggers subagent run) |
+| `archive_thread` | thread_tools.py | Archive a thread |
+| `spawn_agent` | thread_tools.py | Spawn a subagent wired to a named thread |
+
+### Thread Communication Flow
+
+```
+Parent calls reply_to_thread("researcher", "what did you find?")
+  → thread.reply(content)
+  → outbound listener fires (captured spawn_loop.create_task)
+  → _run_subagent_and_post(subagent, thread, content, source_ctx)
+  → subagent._collect_run(prompt)  [runs subagent's _event_stream]
+  → thread.send(answer, source_ctx, events=serialized_events)
+  → inbound listener fires (_register_thread_notification)
+  → _queue_thread_follow_up("researcher")
+  → enqueue_run_message("new message in 'researcher'", source="thread")
+  → run worker picks it up → parent's _event_stream runs
+  → parent calls read_thread("researcher"), sees answer, calls reply_to_thread
+```
 
 ### Skill Structure
 
@@ -83,4 +113,6 @@ skill-name/
 - Dependencies managed with `uv`
 - Environment: `API_KEY` in `.env` file (loaded via python-dotenv)
 - The SDK package is `skill_agent/`; user-land skills go in `skills/`; SDK-bundled skills go in `native-skills/`
+- Server entry point is `run_server.py` (not `server.py` — avoids name collision with the `server/` package)
 - `Example.py` is the reference implementation showing CLI event consumption
+- Tests use `pytest` + `pytest-anyio` for async tests; fake agents/registries in `test_server_cors.py`

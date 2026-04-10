@@ -1,14 +1,14 @@
 """Tests for gaps identified during review:
 1. Auto-compression fallback triggers directly (no model cooperation needed)
-2. write_to_thread routes to subagent inbox vs self inbox
-3. Singleton re-spawn after delete
+2. Thread reply fires outbound listeners (subagent communication path)
+3. Singleton tracking and re-registration after archive
 4. _RunDeps fields are references, not copies
 """
 
-from skill_agent.inbox import Inbox, ThreadStatus
+from skill_agent.threads import ThreadRegistry, ThreadStatus
 from skill_agent.messages import Message, MessageType, UIContext
 from skill_agent.context_tools import compress_all_impl, build_generic_summary
-from skill_agent.inbox_tools import write_to_thread_impl, delete_thread_impl
+from skill_agent.thread_tools import reply_to_thread_impl, archive_thread_impl
 
 
 # ── 1. Auto-compression fallback ─────────────────────────────────────
@@ -43,115 +43,59 @@ def test_auto_compression_forces_without_model():
     assert log[0].content == "Tell me about Python"  # untouched
 
 
-# ── 2. write_to_thread routing ───────────────────────────────────────
+# ── 2. Thread reply fires outbound (subagent communication path) ────
 
 
-class _FakeSubagent:
-    """Minimal stand-in with its own inbox."""
-    def __init__(self) -> None:
-        self.inbox = Inbox()
-        # Create a thread the subagent can receive on
-        self.inbox.create_item(
-            content="init", subject="sa-thread",
-            source_context=UIContext(sender="spawn"), notify=False,
-            thread_id="sa-1",
-        )
+def test_reply_to_thread_fires_outbound_listener():
+    """reply_to_thread calls thread.reply(), which fires outbound listeners.
+    This is the parent → subagent communication path."""
+    reg = ThreadRegistry()
+    reg.create("researcher", participants=["subagent"])
+    reg.get("researcher").send("ready")
+
+    received = []
+    reg.get("researcher").subscribe_outbound(lambda msg: received.append(msg))
+
+    reply_to_thread_impl(reg, [], "researcher", "Start working on X")
+
+    assert len(received) == 1
+    assert received[0].content == "Start working on X"
+    assert received[0].role.value == "agent"
 
 
-def test_write_to_thread_routes_to_subagent_inbox():
-    """When thread_id matches an active subagent, the message goes to that subagent's inbox."""
-    own_inbox = Inbox()
-    subagent = _FakeSubagent()
-    active_subagents = {"sa-1": subagent}
-    log: list[Message] = []
+def test_thread_send_fires_inbound_listener():
+    """thread.send() fires inbound listeners. This is the subagent → parent path."""
+    reg = ThreadRegistry()
+    reg.create("researcher")
 
-    result = write_to_thread_impl(
-        own_inbox=own_inbox,
-        active_subagents=active_subagents,
-        message_log=log,
-        thread_id="sa-1",
-        content="instruction for subagent",
-        notify=True,
-        source_context=UIContext(sender="parent"),
-    )
+    received = []
+    reg.get("researcher").subscribe_inbound(lambda msg: received.append(msg))
 
-    assert "sa-1" in result
-    # Message landed in the subagent's inbox, not the parent's
-    sa_items = subagent.inbox.read_thread("sa-1")
-    assert any("instruction for subagent" in item.content for item in sa_items)
-    # Parent inbox should NOT have this message
-    assert not any("instruction for subagent" in item.content for item in own_inbox.items)
+    reg.get("researcher").send("Result: found 5 sources")
+
+    assert len(received) == 1
+    assert received[0].content == "Result: found 5 sources"
+    assert received[0].role.value == "participant"
 
 
-def test_write_to_thread_falls_back_to_own_inbox():
-    """When thread_id doesn't match a subagent, message goes to own inbox."""
-    own_inbox = Inbox()
-    own_inbox.create_item(
-        content="init", subject="my-thread",
-        source_context=UIContext(), notify=False, thread_id="t-own",
-    )
-    active_subagents: dict = {}
-    log: list[Message] = []
-
-    result = write_to_thread_impl(
-        own_inbox=own_inbox,
-        active_subagents=active_subagents,
-        message_log=log,
-        thread_id="t-own",
-        content="self-note",
-        notify=False,
-        source_context=UIContext(sender="agent"),
-    )
-
-    assert "t-own" in result
-    items = own_inbox.read_thread("t-own")
-    assert any("self-note" in item.content for item in items)
+# ── 3. Singleton re-registration after archive ─────────────────────
 
 
-def test_write_to_thread_nonexistent_returns_error():
-    """Writing to a thread that doesn't exist in any inbox returns an error."""
-    own_inbox = Inbox()
-    log: list[Message] = []
+def test_singleton_reregistration_after_archive():
+    """After archiving a singleton's thread, a new one can be registered with the same id."""
+    reg = ThreadRegistry()
+    singletons: dict[str, str] = {"researcher": "old-thread"}
 
-    result = write_to_thread_impl(
-        own_inbox=own_inbox,
-        active_subagents={},
-        message_log=log,
-        thread_id="ghost-thread",
-        content="hello",
-        notify=False,
-    )
+    reg.create("old-thread", participants=["subagent"])
+    reg.archive("old-thread")
 
-    assert "not found" in result.lower()
+    # Singleton mapping can be updated
+    singletons["researcher"] = "new-thread"
+    reg.create("new-thread", participants=["subagent"])
 
-
-# ── 3. Singleton re-spawn after delete ───────────────────────────────
-
-
-def test_singleton_respawn_after_delete():
-    """After deleting a singleton's thread, a new one can be spawned with the same id."""
-    inbox = Inbox()
-    singletons: dict[str, str] = {"researcher": "t-old"}
-
-    # Create and delete the old thread
-    inbox.create_item(
-        content="old task", subject="research",
-        source_context=UIContext(), notify=False, thread_id="t-old",
-    )
-    delete_thread_impl(inbox, "t-old", {}, singletons)
-
-    # Singleton mapping should be cleared
-    assert "researcher" not in singletons
-
-    # Simulate re-spawn: a new singleton can now be registered
-    singletons["researcher"] = "t-new"
-    inbox.create_item(
-        content="new task", subject="research v2",
-        source_context=UIContext(), notify=False, thread_id="t-new",
-    )
-
-    assert singletons["researcher"] == "t-new"
-    assert inbox.get_thread("t-new").items[0].subject == "research v2"
+    assert singletons["researcher"] == "new-thread"
+    assert reg.get("new-thread").status == ThreadStatus.active
+    assert reg.get("old-thread").archived is True
 
 
 # ── 4. _RunDeps fields are references ────────────────────────────────
@@ -165,15 +109,13 @@ def test_rundeps_fields_are_references_not_copies():
     # Simulate what Agent.__init__ does
     shared_log: list[Message] = []
     shared_window: list[Message] = []
-    shared_inbox = Inbox()
-    shared_subagents: dict = {}
+    shared_registry = ThreadRegistry()
 
     deps = _RunDeps(
         skills={},
-        inbox=shared_inbox,
+        thread_registry=shared_registry,
         message_log=shared_log,
         context_window=shared_window,
-        active_subagents=shared_subagents,
         context_compression_threshold=100_000,
     )
 
@@ -187,9 +129,5 @@ def test_rundeps_fields_are_references_not_copies():
     assert len(deps.context_window) == 1
     assert deps.context_window[0].content == "hi"
 
-    # Inbox is the same object
-    assert deps.inbox is shared_inbox
-
-    # Subagents dict is the same object
-    deps.active_subagents["sa-1"] = "fake"
-    assert shared_subagents["sa-1"] == "fake"
+    # Registry is the same object
+    assert deps.thread_registry is shared_registry

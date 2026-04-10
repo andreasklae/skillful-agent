@@ -19,11 +19,18 @@ dependencies = [
 examples = ["wikipedia-api>=0.8.0"]
 # PDF text extraction for run(..., files=[...]) and user_prompt_files
 pdf = ["pdfplumber>=0.11.0"]
+# Server dependencies
+server = [
+    "azure-identity>=1.15.0",
+    "azure-keyvault-secrets>=4.8.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+]
 
-# Only ship the skill_agent package (exclude sibling dirs like data/, native-skills/).
+# Only ship the SDK and server packages (exclude sibling dirs like data/, native-skills/).
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["skill_agent*"]
+include = ["skill_agent*", "server*"]
 
 [tool.setuptools.package-data]
 skill_agent = ["*.md"]

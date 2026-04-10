@@ -5,11 +5,10 @@ import importlib
 def test_all_new_modules_importable():
     modules = [
         "skill_agent.messages",
-        "skill_agent.inbox",
+        "skill_agent.threads",
+        "skill_agent.thread_tools",
         "skill_agent.context_tools",
-        "skill_agent.inbox_tools",
         "skill_agent.skill_tools",
-        "skill_agent.subagent",
     ]
     for mod in modules:
         importlib.import_module(mod)
@@ -18,12 +17,11 @@ def test_all_new_modules_importable():
 def test_public_api_exports():
     from skill_agent import (
         Message, MessageType, SourceContext, UIContext, EmailContext, SubAgentContext,
-        Inbox, InboxItem, Thread, ThreadStatus,
-        SubAgent,
+        Thread, ThreadMessage, ThreadRole, ThreadStatus, ThreadRegistry,
     )
     assert Message is not None
-    assert Inbox is not None
-    assert SubAgent is not None
+    assert Thread is not None
+    assert ThreadRegistry is not None
 
 
 def test_agent_config_has_new_field():

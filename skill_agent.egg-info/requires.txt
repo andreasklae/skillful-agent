@@ -8,3 +8,9 @@ wikipedia-api>=0.8.0
 
 [pdf]
 pdfplumber>=0.11.0
+
+[server]
+azure-identity>=1.15.0
+azure-keyvault-secrets>=4.8.0
+fastapi>=0.115.0
+uvicorn>=0.34.0

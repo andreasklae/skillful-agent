@@ -16,6 +16,11 @@ from pydantic_ai import RunContext
 
 from .messages import Message, MessageType
 
+ActivityDesc = Annotated[
+    str,
+    Field(description="Short plain-language phrase describing what you are doing."),
+]
+
 
 def compress_message_impl(
     context_window: list[Message],
@@ -147,11 +152,6 @@ def build_generic_summary(
 
 def register_context_tools(runner: Any) -> None:
     """Register compress_message, retrieve_message, and compress_all as pydantic-ai tools."""
-
-    ActivityDesc = Annotated[
-        str,
-        Field(description="Short plain-language phrase describing what you are doing."),
-    ]
 
     @runner.tool(description=(
         "Compress a message in the context window by replacing its content with a summary. "
