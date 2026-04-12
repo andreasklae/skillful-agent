@@ -312,6 +312,321 @@ data: {
 }
 ```
 
+## Frontend Integration Guide
+
+A complete walkthrough for building a chat UI with the server.
+
+### Basic Chat Interface
+
+**1. Queue a run and stream results**
+
+```javascript
+async function submitPrompt(userMessage) {
+  const response = await fetch('/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: userMessage })
+  })
+
+  // response.body is a ReadableStream (SSE)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    const chunk = decoder.decode(value)
+    const lines = chunk.split('\n')
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        const eventType = line.slice(7)
+        continue
+      }
+      if (line.startsWith('data: ')) {
+        const data = JSON.parse(line.slice(6))
+        handleEvent(data)
+      }
+    }
+  }
+}
+
+function handleEvent(envelope) {
+  if (envelope.type === 'run_queued') {
+    console.log('Run queued:', envelope.run_id)
+    showLoadingIndicator()
+  }
+
+  if (envelope.type === 'run_started') {
+    console.log('Run started')
+  }
+
+  if (envelope.type === 'agent_event') {
+    const event = envelope.event
+    if (event.type === 'text_delta') {
+      appendToChat(event.content)  // Stream text as it arrives
+    } else if (event.type === 'tool_call') {
+      showToolIndicator(event.name, event.activity)
+    } else if (event.type === 'run_complete') {
+      hideLoadingIndicator()
+      console.log('Tokens:', event.usage)
+    }
+  }
+}
+```
+
+**2. Live run monitoring (background)**
+
+```javascript
+// Monitor all runs across the app (for status bars, activity feeds, etc.)
+const runMonitor = new EventSource('/runs/subscribe')
+
+runMonitor.addEventListener('run_queued', e => {
+  const { run_id, source } = JSON.parse(e.data)
+  updateActivityFeed(`Run ${run_id} queued from ${source}`)
+})
+
+runMonitor.addEventListener('agent_event', e => {
+  const { run_id, event } = JSON.parse(e.data)
+  if (event.type === 'run_complete') {
+    updateActivityFeed(`Run ${run_id} complete (${event.usage.output_tokens} tokens)`)
+  }
+})
+```
+
+**3. Multi-thread chat (subagents)**
+
+```javascript
+// Listen for all thread activity across the app
+const threadMonitor = new EventSource('/threads/subscribe')
+
+threadMonitor.addEventListener('thread_message', e => {
+  const msg = JSON.parse(e.data)
+  console.log(`[${msg.thread_name}] ${msg.role}: ${msg.content}`)
+
+  // Each message has an activity log
+  if (msg.events) {
+    const toolCalls = msg.events.filter(e => e.type === 'tool_call')
+    const usage = msg.events.find(e => e.type === 'run_complete')?.usage
+    renderThreadMessage(msg, { toolCalls, usage })
+  }
+})
+
+// Read a specific thread's history
+async function loadThreadHistory(threadName) {
+  const res = await fetch(`/threads/${threadName}`)
+  const { messages } = await res.json()
+  return messages
+}
+
+// Send a message to a thread (triggers subagent if it's a subagent thread)
+async function replyToThread(threadName, content) {
+  await fetch(`/threads/${threadName}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content })
+  })
+}
+```
+
+**4. List & upload skills**
+
+```javascript
+// Show available skills in a dropdown or UI
+async function loadSkills() {
+  const res = await fetch('/skills')
+  const { skills } = await res.json()
+  return skills  // Array of { name, description }
+}
+
+// Upload a new skill (drag-and-drop)
+async function uploadSkill(zipFile) {
+  const formData = new FormData()
+  formData.append('file', zipFile)
+  
+  const res = await fetch('/skills/upload', {
+    method: 'POST',
+    body: formData
+  })
+  const { skill, message } = await res.json()
+  console.log(`Uploaded skill: ${skill.name}`)
+}
+```
+
+**5. Health checks**
+
+```javascript
+async function checkServerHealth() {
+  try {
+    const res = await fetch('/health')
+    const { status, version } = await res.json()
+    return status === 'ok'
+  } catch {
+    return false
+  }
+}
+
+// Poll for readiness on app startup
+async function waitForServer(maxAttempts = 10) {
+  for (let i = 0; i < maxAttempts; i++) {
+    if (await checkServerHealth()) return true
+    await new Promise(r => setTimeout(r, 500))
+  }
+  throw new Error('Server did not become ready')
+}
+```
+
+### React Example: Complete Chat Component
+
+```jsx
+import { useState, useEffect, useRef } from 'react'
+
+export function ChatUI() {
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [skills, setSkills] = useState([])
+
+  // Load available skills on mount
+  useEffect(() => {
+    fetch('/skills')
+      .then(r => r.json())
+      .then(({ skills }) => setSkills(skills))
+  }, [])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!input.trim()) return
+
+    // Add user message to UI
+    setMessages(prev => [...prev, { role: 'user', content: input }])
+    setInput('')
+    setIsLoading(true)
+
+    const response = await fetch('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: input })
+    })
+
+    let currentResponse = ''
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value)
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue
+
+        const data = JSON.parse(line.slice(6))
+        if (data.type === 'agent_event') {
+          const event = data.event
+          if (event.type === 'text_delta') {
+            currentResponse += event.content
+            // Update UI in real-time
+            setMessages(prev => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'agent') {
+                return [...prev.slice(0, -1), { ...last, content: currentResponse }]
+              }
+              return [...prev, { role: 'agent', content: currentResponse }]
+            })
+          } else if (event.type === 'tool_call') {
+            console.log(`Using tool: ${event.name}`)
+          } else if (event.type === 'run_complete') {
+            console.log(`Tokens: ${event.usage.input_tokens} → ${event.usage.output_tokens}`)
+          }
+        }
+      }
+    }
+
+    setIsLoading(false)
+  }
+
+  return (
+    <div className="chat-container">
+      <div className="skills-bar">
+        <p>Available skills:</p>
+        {skills.map(s => (
+          <span key={s.name} title={s.description}>
+            {s.name}
+          </span>
+        ))}
+      </div>
+
+      <div className="messages">
+        {messages.map((msg, i) => (
+          <div key={i} className={`message ${msg.role}`}>
+            {msg.content}
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={handleSubmit}>
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          placeholder="Ask the agent..."
+          disabled={isLoading}
+        />
+        <button type="submit" disabled={isLoading}>
+          Send
+        </button>
+      </form>
+    </div>
+  )
+}
+```
+
+### Common Patterns
+
+**Streaming text with typing effect**
+```javascript
+async function streamTextWithDelay(text) {
+  for (const char of text) {
+    document.getElementById('output').textContent += char
+    await new Promise(r => setTimeout(r, 10))  // 10ms per char
+  }
+}
+```
+
+**Display tool usage**
+```javascript
+function showToolUsage(event) {
+  const toolName = event.name
+  const activity = event.activity || 'executing'
+  return `🔧 ${toolName}: ${activity}`
+}
+```
+
+**Display token usage**
+```javascript
+function formatTokens(usage) {
+  return `${usage.input_tokens} → ${usage.output_tokens} (${
+    usage.input_tokens + usage.output_tokens
+  } total)`
+}
+```
+
+**Error handling**
+```javascript
+async function safeFetch(url, options = {}) {
+  try {
+    const res = await fetch(url, options)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.error(`Request failed: ${err.message}`)
+    throw err
+  }
+}
+```
+
 ### Client Example (JavaScript)
 
 ```javascript
