@@ -109,10 +109,42 @@ skill-name/
 
 ## Conventions
 
-- Python 3.12+ required
-- Dependencies managed with `uv`
-- Environment: `API_KEY` in `.env` file (loaded via python-dotenv)
-- The SDK package is `skill_agent/`; user-land skills go in `skills/`; SDK-bundled skills go in `native-skills/`
-- Server entry point is `run_server.py` (not `server.py` — avoids name collision with the `server/` package)
-- `Example.py` is the reference implementation showing CLI event consumption
-- Tests use `pytest` + `pytest-anyio` for async tests; fake agents/registries in `test_server_cors.py`
+- **Python 3.12+** required
+- **Dependencies**: `uv` (not pip)
+- **Environment**: `API_KEY` in `.env` (loaded via python-dotenv)
+- **Packages**: `skill_agent/` (SDK), `server/` (FastAPI app), `native-skills/` (bundled), `skills/` (user)
+- **Entry points**: `run_server.py` (API), `Example.py` (CLI reference)
+- **Tests**: `pytest` + `pytest-anyio` for async; 70 tests total
+
+## Common Tasks
+
+**Create a new agent**
+```python
+agent = Agent(model=model, skills_dir=Path("skills"))
+result = agent.run("Your prompt here")
+```
+
+**Stream results**
+```python
+async for event in agent.run_stream("prompt"):
+    if isinstance(event, TextDeltaEvent):
+        print(event.content, end="", flush=True)
+```
+
+**Access conversation history**
+```python
+main = agent.thread_registry.get("main")
+for msg in main.messages:
+    print(f"[{msg.role}] {msg.content}")
+```
+
+**Enable file reading**
+```python
+config = AgentConfig(user_file_roots=[Path("workspace")])
+agent = Agent(model=model, skills_dir=Path("skills"), config=config)
+```
+
+**Run tests**
+```bash
+uv run pytest tests/ -v
+```
