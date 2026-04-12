@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from dotenv import load_dotenv
+
 from .config import ServerSettings, configure_logging, resolve_openai_api_key
+
+load_dotenv()
 from .dependencies import init_agent
 from .routes import register_routes
 
@@ -59,15 +63,24 @@ def create_app(
 def _build_agent(settings: ServerSettings) -> Agent:
     """Create an Agent from settings, fetching the API key as needed."""
     from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.openai import OpenAIProvider
 
     from skill_agent import Agent, AgentConfig
 
-    api_key = resolve_openai_api_key(settings)
-    model = OpenAIChatModel(
-        settings.openai_model,
-        provider=OpenAIProvider(api_key=api_key),
-    )
+    if settings.use_azure:
+        from pydantic_ai.providers.azure import AzureProvider
+
+        api_key = settings.azure_api_key or resolve_openai_api_key(settings)
+        provider = AzureProvider(
+            azure_endpoint=settings.azure_endpoint,
+            api_version=settings.azure_api_version,
+            api_key=api_key,
+        )
+    else:
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(api_key=resolve_openai_api_key(settings))
+
+    model = OpenAIChatModel(settings.openai_model, provider=provider)
     return Agent(
         model=model,
         skills_dir=Path(settings.skills_dir),

@@ -7,7 +7,6 @@ server/dependencies.py
 server/models.py
 server/routes/__init__.py
 server/routes/health.py
-server/routes/inbox.py
 server/routes/runs.py
 server/routes/skills.py
 server/routes/threads.py
@@ -17,14 +16,13 @@ server/services/sse.py
 skill_agent/__init__.py
 skill_agent/agent.py
 skill_agent/context_tools.py
-skill_agent/inbox.py
-skill_agent/inbox_tools.py
 skill_agent/messages.py
 skill_agent/models.py
 skill_agent/registry.py
 skill_agent/skill_tools.py
-skill_agent/subagent.py
 skill_agent/system_prompt.md
+skill_agent/thread_tools.py
+skill_agent/threads.py
 skill_agent/user_prompt_files.py
 skill_agent.egg-info/PKG-INFO
 skill_agent.egg-info/SOURCES.txt
@@ -37,9 +35,8 @@ tests/test_agent_stores.py
 tests/test_config.py
 tests/test_context_tools.py
 tests/test_gaps.py
-tests/test_inbox.py
-tests/test_inbox_tools.py
 tests/test_integration.py
 tests/test_messages.py
 tests/test_server_cors.py
-tests/test_subagent.py
+tests/test_thread_tools.py
+tests/test_threads.py

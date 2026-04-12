@@ -19,6 +19,10 @@ class ServerSettings:
     skills_dir: str = "skills"
     openai_model: str = "gpt-5.4-mini"
     openai_api_key: str | None = None
+    # Azure OpenAI — if azure_endpoint is set, AzureProvider is used instead of OpenAIProvider
+    azure_endpoint: str | None = None
+    azure_api_key: str | None = None
+    azure_api_version: str = "2024-07-01-preview"
     log_level: str = "INFO"
 
     @classmethod
@@ -29,8 +33,15 @@ class ServerSettings:
             skills_dir=os.getenv("SKILL_AGENT_SKILLS_DIR", "skills"),
             openai_model=os.getenv("SKILL_AGENT_OPENAI_MODEL", "gpt-5.4-mini"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("SKILL_AGENT_AZURE_ENDPOINT"),
+            azure_api_key=os.getenv("SKILL_AGENT_AZURE_API_KEY"),
+            azure_api_version=os.getenv("SKILL_AGENT_AZURE_API_VERSION", "2024-07-01-preview"),
             log_level=os.getenv("SKILL_AGENT_LOG_LEVEL", "INFO"),
         )
+
+    @property
+    def use_azure(self) -> bool:
+        return bool(self.azure_endpoint)
 
     def parsed_cors_origins(self) -> list[str]:
         """Parse comma-separated CORS origins, defaulting to ["*"]."""
