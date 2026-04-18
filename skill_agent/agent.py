@@ -60,6 +60,7 @@ from .models import (
     ClientFunctionRequestEvent,
     RunCompleteEvent,
     Skill,
+    SkillLoadedEvent,
     TextDeltaEvent,
     TodoItem,
     TodoStatus,
@@ -104,8 +105,10 @@ class _RunDeps:
     _next_todo_id: int = 1
     user_file_roots: tuple[Path, ...] = field(default_factory=tuple)
     max_user_file_read_chars: int = 15000
+    max_user_file_write_bytes: int = 2 * 1024 * 1024
     user_skills_dirs: tuple[Path, ...] = field(default_factory=tuple)
     pending_client_requests: list[ClientFunctionRequest] = field(default_factory=list)
+    pending_skill_loaded: list[SkillLoadedEvent] = field(default_factory=list)
 
 
 @dataclass
@@ -186,6 +189,7 @@ class Agent:
             _singleton_agents=self._singleton_agents,
             user_file_roots=roots,
             max_user_file_read_chars=cfg.max_user_file_read_chars,
+            max_user_file_write_bytes=cfg.max_user_file_write_bytes,
             user_skills_dirs=(self._skills_dir,),
         )
 
@@ -249,6 +253,26 @@ class Agent:
 
         msg = thread.send(content, source_context)
         return msg
+
+    def set_user_file_roots(self, roots: list[Path | str]) -> None:
+        """Update the user file roots and rebuild the runner with the new paths.
+
+        Affects both read_user_file and write_user_file — they resolve paths
+        relative to these roots and reject any path that escapes them.
+        """
+        resolved = tuple(Path(p).expanduser().resolve() for p in roots)
+        self._config = self._config.model_copy(update={"user_file_roots": list(resolved)})
+        self._deps.user_file_roots = resolved
+        self._deps.max_user_file_write_bytes = self._config.max_user_file_write_bytes
+        self._system_prompt = self._build_runtime_system_prompt(self._skills)
+        self._runner = _create_runner(self._model, self._system_prompt, resolved)
+        logger.info("user_file_roots_updated roots=%s", [str(r) for r in resolved])
+
+    def set_skills_dir(self, skills_dir: Path | str) -> list[str]:
+        """Update the skills directory, reload all skills, and rebuild the runner."""
+        self._skills_dir = Path(skills_dir).expanduser().resolve()
+        self._deps.user_skills_dirs = (self._skills_dir,)
+        return self._reload_skills(rebuild_runner=True)
 
     def refresh_skills(self) -> list[str]:
         """Reload native and user skills from disk and rebuild the runner."""
@@ -545,6 +569,7 @@ class Agent:
         self._deps.activated_skills.clear()
         self._deps.tool_log.clear()
         self._deps.pending_client_requests.clear()
+        self._deps.pending_skill_loaded.clear()
 
     @property
     def current_todos(self) -> list[TodoItem]:
@@ -688,6 +713,13 @@ class Agent:
                     _todo_ev = TodoUpdateEvent(items=list(self._deps.todo_list))
                     run_events.append(_todo_ev)
                     yield _todo_ev
+
+                # use_skill queues a SkillLoadedEvent in _deps — emit and clear it
+                if raw.result.tool_name == "use_skill" and self._deps.pending_skill_loaded:
+                    for _skill_ev in self._deps.pending_skill_loaded:
+                        run_events.append(_skill_ev)
+                        yield _skill_ev
+                    self._deps.pending_skill_loaded.clear()
 
                 # call_client_function queues requests in _deps — emit and clear them
                 if raw.result.tool_name == "call_client_function" and self._deps.pending_client_requests:

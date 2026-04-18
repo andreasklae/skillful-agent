@@ -9,6 +9,7 @@ Public API:
     TextDeltaEvent    — Answer token from the model
     RunCompleteEvent  — Final event (token usage); conversation memory lives on Agent
     ClientFunctionRequestEvent — Client function request from skill
+    SkillLoadedEvent  — Emitted when use_skill loads a skill's full instructions
     Skill             — Skill metadata model (name, description, body, resources)
     AgentConfig       — Optional configuration (max_tokens, max_turns, etc.)
     AgentResult       — Typed return value from agent.run()
@@ -37,6 +38,7 @@ from .models import (
     ClientFunctionRequestEvent,
     RunCompleteEvent,
     Skill,
+    SkillLoadedEvent,
     TextDeltaEvent,
     TodoItem,
     TodoStatus,
@@ -72,6 +74,7 @@ __all__ = [
     "ClientFunctionRequestEvent",
     "RunCompleteEvent",
     "Skill",
+    "SkillLoadedEvent",
     "TextDeltaEvent",
     "TodoItem",
     "TodoStatus",

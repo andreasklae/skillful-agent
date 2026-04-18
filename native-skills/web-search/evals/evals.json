@@ -1,0 +1,26 @@
+{
+  "skill_name": "web-search-free",
+  "evals": [
+    {
+      "id": 1,
+      "name": "version-lookup",
+      "prompt": "What's the latest stable release of Bun (the JavaScript runtime)? Give me the exact version number and one notable feature added in a recent release.",
+      "expected_output": "A current Bun version number (e.g. 1.x.x format) plus a real feature, with at least one source URL from bun.sh or the oven-sh/bun GitHub repo cited as a markdown link.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "url-summarization",
+      "prompt": "Read https://en.wikipedia.org/wiki/Photosynthesis and summarize the light-dependent reactions in 3 short bullet points.",
+      "expected_output": "Three bullets covering the light-dependent reactions, mentioning at least the thylakoid membrane and the production of ATP and NADPH. The Wikipedia URL must be cited as a markdown source link.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "topical-research",
+      "prompt": "Look up what 'CRDT' stands for in distributed systems, and find one production system or product released in 2024 or later that uses CRDTs. Briefly explain how that system uses them.",
+      "expected_output": "Expands CRDT to 'Conflict-free Replicated Data Type', names a real product that uses CRDTs (e.g. Yjs, Automerge, Linear, Figma, Liveblocks, Redis Enterprise CRDB), and cites at least one source URL as a markdown link.",
+      "files": []
+    }
+  ]
+}

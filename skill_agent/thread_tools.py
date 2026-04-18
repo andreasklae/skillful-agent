@@ -167,32 +167,30 @@ def register_thread_tools(runner: Any) -> None:
         return archive_thread_impl(ctx.deps.thread_registry, thread_name)
 
     @runner.tool(description=(
-        "Spawn a subagent to handle a scoped task. Creates a named communication thread. "
-        "The subagent runs autonomously and posts results back to the thread. "
-        "Use reply_to_thread to send messages to the subagent. "
-        "Use archive_thread to stop it. "
-        "Set blocking=true to wait for the subagent's first response. "
+        "Spawn a subagent attached to a named communication thread. "
+        "This ONLY creates the subagent and wires the thread — it does NOT start the subagent working. "
+        "After calling spawn_agent, send the task itself with reply_to_thread(thread_name, task) "
+        "and end your turn. That first reply triggers the subagent's first run. "
+        "The subagent will post its answer back to the thread and you will be notified "
+        "('new message in <thread_name>') — call read_thread then to see its response. "
+        "Use archive_thread to stop a subagent. "
         "Set singleton_id to ensure only one instance runs for that id."
     ))
     async def spawn_agent(
         ctx: RunContext,
         thread_name: str,
-        instructions: str,
         system_prompt: str,
         tools: list[str] | None = None,
         skills: list[str] | None = None,
-        blocking: bool = False,
         singleton_id: str | None = None,
         activity: ActivityDesc = "",
     ) -> str:
         return await spawn_agent_impl(
             ctx=ctx,
             thread_name=thread_name,
-            instructions=instructions,
             system_prompt=system_prompt,
             tools=tools or [],
             skills=skills or [],
-            blocking=blocking,
             singleton_id=singleton_id,
         )
 
@@ -201,14 +199,16 @@ async def spawn_agent_impl(
     *,
     ctx: RunContext,
     thread_name: str,
-    instructions: str,
     system_prompt: str,
     tools: list[str],
     skills: list[str],
-    blocking: bool,
     singleton_id: str | None,
 ) -> str:
-    """Create a thread and wire a subagent (plain Agent) to it."""
+    """Create a thread and wire a subagent (plain Agent) to it.
+
+    The subagent does NOT run until the first message arrives in the thread
+    via reply_to_thread(). That first reply is the subagent's first prompt.
+    """
     from .agent import Agent
 
     thread_registry: ThreadRegistry = ctx.deps.thread_registry
@@ -303,31 +303,17 @@ async def spawn_agent_impl(
 
     thread.subscribe_outbound(on_parent_reply)
 
-    # Wire inbound listener: subagent posts back → parent gets notified
-    # (Inbound listeners on non-main threads trigger notification runs on the parent.)
-    # This is handled by the agent's own notification mechanism registered
-    # when the thread is created — no extra wiring needed here, as the
-    # agent registers a global inbound listener for non-main threads.
-
-    # Kick off the subagent with the initial instructions
+    # The subagent is now wired and idle. It will run when a message arrives on
+    # the thread via reply_to_thread (which fires on_parent_reply above).
     logger.info(
-        "spawn_agent thread=%s instructions=%s singleton_id=%s blocking=%s",
+        "spawn_agent thread=%s singleton_id=%s (idle — awaiting first reply_to_thread)",
         thread_name,
-        instructions[:200],
         singleton_id,
-        blocking,
     )
-
-    if blocking:
-        await _run_subagent_and_post(subagent, thread, instructions, source_ctx)
-        return f"Subagent completed. Thread: {thread_name}"
-    else:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return f"Thread '{thread_name}' created but no event loop for async dispatch."
-        loop.create_task(_run_subagent_and_post(subagent, thread, instructions, source_ctx))
-        return f"Subagent spawned. Thread: {thread_name}"
+    return (
+        f"Subagent spawned on thread '{thread_name}'. "
+        f"Send the task with reply_to_thread('{thread_name}', <task>) to start it."
+    )
 
 
 async def _run_subagent_and_post(

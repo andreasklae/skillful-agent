@@ -236,6 +236,18 @@ class ClientFunctionRequestEvent(BaseModel):
     )
 
 
+class SkillLoadedEvent(BaseModel):
+    """Emitted when the agent loads a skill's full instructions via use_skill.
+
+    Allows UI to render an inline "loaded skill X" indicator as the agent
+    progresses through its work.
+    """
+
+    type: Literal["skill_loaded"] = "skill_loaded"
+    name: str = Field(description="The skill name that was loaded.")
+    source: str = Field(description="Absolute path to the SKILL.md file, or '<builtin>' if unknown.")
+
+
 # Discriminated union of all event types.
 # The `type` field is the discriminator — Pydantic uses it to deserialize
 # the correct subtype automatically.
@@ -247,6 +259,7 @@ AgentEvent = Annotated[
         TextDeltaEvent,
         RunCompleteEvent,
         ClientFunctionRequestEvent,
+        SkillLoadedEvent,
     ],
     Field(discriminator="type"),
 ]
@@ -317,6 +330,10 @@ class AgentConfig(BaseModel):
     max_user_file_read_chars: int = Field(
         default=15000,
         description="Maximum characters read_user_file returns per call.",
+    )
+    max_user_file_write_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        description="Maximum bytes write_user_file accepts per call (default 2 MB).",
     )
     max_attached_text_file_chars: int | None = Field(
         default=400_000,

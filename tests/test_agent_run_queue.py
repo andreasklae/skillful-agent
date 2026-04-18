@@ -124,3 +124,52 @@ async def test_thread_notification_runs_are_suppressed_after_limit():
     await asyncio.sleep(0)
 
     assert agent._queued_runs == {}
+
+
+@pytest.mark.anyio
+async def test_thread_send_fires_inbound_listener_and_queues_run():
+    """Regression test: when someone calls thread.send() on a registered thread,
+    the inbound listener must fire and enqueue a 'new message in ...' run."""
+    agent = _make_queue_agent()
+
+    thread = agent.thread_registry.create(name="countries", participants=["subagent"])
+    agent._register_thread_notification(thread)
+
+    from skill_agent.messages import SubAgentContext
+
+    # Simulate the subagent posting back
+    thread.send(
+        "Here are 5 cool country facts...",
+        SubAgentContext(
+            subagent_id="countries",
+            parent_interaction_id="countries",
+            sender="subagent:countries",
+        ),
+    )
+
+    # The listener schedules a task on the current loop; yield so it runs.
+    await asyncio.sleep(0)
+
+    assert len(agent._queued_runs) == 1, (
+        f"Expected 1 queued run from thread.send inbound listener, "
+        f"got {len(agent._queued_runs)}. Queue keys: {list(agent._queued_run_keys)}"
+    )
+    job = next(iter(agent._queued_runs.values()))
+    assert job.source == "thread"
+    assert "countries" in job.user_message
+
+
+@pytest.mark.anyio
+async def test_thread_send_fires_listener_from_within_async_task():
+    """The subagent posts from within an async task; the listener must still queue a run."""
+    agent = _make_queue_agent()
+    thread = agent.thread_registry.create(name="researcher", participants=["subagent"])
+    agent._register_thread_notification(thread)
+
+    async def subagent_post():
+        thread.send("here's the answer", None)
+
+    await asyncio.create_task(subagent_post())
+    await asyncio.sleep(0)
+
+    assert len(agent._queued_runs) == 1

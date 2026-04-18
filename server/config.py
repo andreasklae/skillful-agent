@@ -5,7 +5,12 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+# Shared skills dir: frontend/mimir-agent/app/skills/ relative to repo root
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_SKILLS_DIR = str(_REPO_ROOT / "frontend" / "mimir-agent" / "app" / "skills")
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +21,7 @@ class ServerSettings:
 
     keyvault_name: str = ""
     cors_allow_origins: str = "*"
-    skills_dir: str = "skills"
+    skills_dir: str = _DEFAULT_SKILLS_DIR
     openai_model: str = "gpt-5.4-mini"
     openai_api_key: str | None = None
     # Azure OpenAI — if azure_endpoint is set, AzureProvider is used instead of OpenAIProvider
@@ -30,7 +35,7 @@ class ServerSettings:
         return cls(
             keyvault_name=os.getenv("SKILL_AGENT_KEYVAULT_NAME", "easyflex"),
             cors_allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*"),
-            skills_dir=os.getenv("SKILL_AGENT_SKILLS_DIR", "skills"),
+            skills_dir=os.getenv("SKILL_AGENT_SKILLS_DIR", _DEFAULT_SKILLS_DIR),
             openai_model=os.getenv("SKILL_AGENT_OPENAI_MODEL", "gpt-5.4-mini"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             azure_endpoint=os.getenv("SKILL_AGENT_AZURE_ENDPOINT"),

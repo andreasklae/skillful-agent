@@ -6,6 +6,7 @@ server/config.py
 server/dependencies.py
 server/models.py
 server/routes/__init__.py
+server/routes/agent.py
 server/routes/health.py
 server/routes/runs.py
 server/routes/skills.py
@@ -29,6 +30,7 @@ skill_agent.egg-info/SOURCES.txt
 skill_agent.egg-info/dependency_links.txt
 skill_agent.egg-info/requires.txt
 skill_agent.egg-info/top_level.txt
+tests/test_agent_endpoints.py
 tests/test_agent_run_queue.py
 tests/test_agent_skill_reload.py
 tests/test_agent_stores.py
@@ -38,5 +40,7 @@ tests/test_gaps.py
 tests/test_integration.py
 tests/test_messages.py
 tests/test_server_cors.py
+tests/test_skill_loaded_event.py
 tests/test_thread_tools.py
 tests/test_threads.py
+tests/test_write_user_file.py

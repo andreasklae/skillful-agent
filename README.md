@@ -264,6 +264,10 @@ Launches a FastAPI app on `http://localhost:8000`.
 | `GET` | `/skills` | List registered skills (name, description) |
 | `POST` | `/skills/upload` | Upload skill as `.zip` archive |
 | `GET` | `/health` | Health check |
+| `POST` | `/agent/reset` | Clear message_log, context_window, todos, thread registry |
+| `POST` | `/agent/configure` | Dynamically update `skills_dir` and/or `user_file_roots` |
+| `GET` | `/agent/snapshot` | Dump current state as JSON (for persistence/resume) |
+| `POST` | `/agent/load` | Restore state from a snapshot JSON blob |
 
 ### Run Stream (SSE)
 
@@ -777,10 +781,102 @@ agent = Agent(
 uv run pytest tests/ -v
 ```
 
-70 tests covering:
+Tests covering:
 - Progressive skill disclosure
 - Thread communication & subagent spawning
 - Message store & compression
 - Run queue
 - Server endpoints (FastAPI)
 - Event serialization
+- Agent management endpoints (reset, configure, snapshot, load)
+- `write_user_file` tool (path validation, base64, size limits)
+- `SkillLoadedEvent` emission
+
+## Agent Management Endpoints
+
+Added in Phase 1 of the Mimir Agent frontend project.
+
+### POST /agent/reset
+
+Clear all conversation state. Drops `message_log`, `context_window`, todo list, and all threads except a freshly-created `"main"` thread.
+
+```bash
+curl -X POST http://localhost:8000/agent/reset
+# {"status":"ok"}
+```
+
+### POST /agent/configure
+
+Dynamically update `skills_dir` and/or `user_file_roots` without restarting the server. Rebuilds the skill registry and runner in-place.
+
+Request body:
+```json
+{
+  "skills_dir": "/path/to/projects/my-project/skills",
+  "user_file_roots": ["/path/to/projects/my-project/docs"]
+}
+```
+
+Both fields are optional — omit either to leave it unchanged.
+
+Response:
+```json
+{
+  "skills_dir": "/path/to/projects/my-project/skills",
+  "user_file_roots": ["/path/to/projects/my-project/docs"],
+  "registered_skills": ["learner", "my-custom-skill"]
+}
+```
+
+Returns HTTP 400 if a path does not exist on disk.
+
+### GET /agent/snapshot
+
+Dump current state as JSON. Use this after each run to persist the session.
+
+```bash
+curl http://localhost:8000/agent/snapshot
+```
+
+Response fields:
+- `message_log` — full append-only message history (never truncated)
+- `context_window` — working set currently sent to the model
+- `todos` — current todo list
+- `thread_registry` — all threads with their message histories
+
+Known limitation: `_conversation_messages` (the pydantic-ai internal LLM history) is not included because those are opaque model-specific objects with no stable serialisation format. After `POST /agent/load`, the agent's LLM context starts fresh; it will not have verbatim memory of prior turns. Inject a summary as the first message of the new session as a workaround.
+
+### POST /agent/load
+
+Restore state from a snapshot. Designed to be called with the output of `GET /agent/snapshot`.
+
+```bash
+curl -X POST http://localhost:8000/agent/load \
+  -H "Content-Type: application/json" \
+  -d @snapshot.json
+# {"status":"ok","restored":{"message_log_size":12,"context_window_size":8}}
+```
+
+Restores `message_log`, `context_window`, todos, and thread message histories. Skips entries that cannot be rehydrated and logs a warning rather than aborting.
+
+### write_user_file tool
+
+Available to the agent when `user_file_roots` is configured. Mirrors `read_user_file` with the same path-escape protection.
+
+Parameters:
+- `path` — relative to a configured root, or an absolute path inside one
+- `content` — text content (or base64-encoded bytes when `encoding="base64"`)
+- `encoding` — `"utf-8"` (default) or `"base64"` for binary writes
+- `create_parents` — create missing parent directories (default `true`)
+
+Size limit: 2 MB per write (configurable via `AgentConfig.max_user_file_write_bytes`).
+
+### SkillLoadedEvent
+
+Emitted on the SSE stream immediately after `use_skill` returns. Lets the UI render an inline "loaded skill X" indicator.
+
+```json
+{"type": "skill_loaded", "name": "learner", "source": "/abs/path/to/SKILL.md"}
+```
+
+`source` is `"<builtin>"` for skills without a known path.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from .agent import router as agent_router
 from .health import router as health_router
 from .runs import router as runs_router
 from .skills import router as skills_router
@@ -16,3 +17,4 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(runs_router)
     app.include_router(threads_router)
     app.include_router(skills_router)
+    app.include_router(agent_router)

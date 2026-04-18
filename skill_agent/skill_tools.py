@@ -5,6 +5,7 @@ Extracted from agent.py to keep each file focused on one concern.
 """
 
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from pydantic_ai import RunContext
 from .models import (
     ClientFunctionRequest,
     Skill,
+    SkillLoadedEvent,
     TodoItem,
     TodoStatus,
     ToolCallRecord,
@@ -146,6 +148,12 @@ def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None
             return f"Skill '{skill_name}' not found. Available: {available}"
 
         ctx.deps.activated_skills.append(skill_name)
+
+        # Queue a SkillLoadedEvent so the agent's event stream can emit it after the tool result.
+        source = str(skill.path) if skill.path is not None else "<builtin>"
+        ctx.deps.pending_skill_loaded.append(
+            SkillLoadedEvent(name=skill_name, source=source)
+        )
 
         parts = [f"## Skill: {skill_name}\n\n{skill.body}"]
 
@@ -438,14 +446,16 @@ def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None
 
         cmd = [sys.executable, str(script_path)]
         if args:
-            cmd.append(args)
+            try:
+                cmd.extend(shlex.split(args))
+            except ValueError:
+                cmd.append(args)
 
         stdout, stderr, exit_code, ok, truncated = "", "", 1, False, False
 
         try:
             proc = subprocess.run(
                 cmd,
-                input=args or None,
                 capture_output=True,
                 text=True,
                 timeout=90,
@@ -546,7 +556,7 @@ def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None
 
         return f"{action}: {target} ({len(content):,} chars)"
 
-    # ── read_user_file (conditional) ─────────────────────────────────
+    # ── read_user_file / write_user_file (conditional) ─────────────────
 
     if user_file_roots:
 
@@ -579,6 +589,90 @@ def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None
                 truncated=truncated,
             ))
             return out
+
+        @runner.tool(description=(
+            "Write content to a file in the user workspace. "
+            "Use a path relative to a configured root, or an absolute path inside those roots. "
+            "Parent directories are created automatically when create_parents=true (default). "
+            "For encoding='base64', content must be a base64-encoded string and will be written as binary. "
+            "For all other encodings (default 'utf-8'), content is written as text. "
+            "Returns the path written and the number of bytes written."
+        ))
+        def write_user_file(
+            ctx: RunContext,
+            path: str,
+            content: str,
+            encoding: Annotated[
+                str,
+                Field(default="utf-8", description="Text encoding (e.g. 'utf-8') or 'base64' for binary writes."),
+            ] = "utf-8",
+            create_parents: Annotated[
+                bool,
+                Field(default=True, description="Create parent directories if they do not exist."),
+            ] = True,
+            activity: ActivityDesc = "",
+        ) -> str:
+            import base64
+
+            roots = ctx.deps.user_file_roots
+            if not roots:
+                return "No user file roots configured."
+
+            # Resolve destination under allowed roots (write can target new paths, so we
+            # use a custom check rather than resolve_allowed_user_path which requires existence).
+            raw = Path(path.strip())
+            resolved: Path | None = None
+            if raw.is_absolute():
+                cand = raw.resolve()
+                for root in roots:
+                    if cand.is_relative_to(root.resolve()):
+                        resolved = cand
+                        break
+            else:
+                for root in roots:
+                    cand = (root.resolve() / raw).resolve()
+                    if cand.is_relative_to(root.resolve()):
+                        resolved = cand
+                        break
+
+            if resolved is None:
+                return (
+                    f"Path '{path}' is not under any allowed root. "
+                    f"Allowed roots: {[str(r) for r in roots]}"
+                )
+
+            # Enforce write size limit (reuse read-chars cap as a byte cap, defaulting to 2 MB).
+            max_bytes = getattr(ctx.deps, "max_user_file_write_bytes", 2 * 1024 * 1024)
+
+            if create_parents:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+            elif not resolved.parent.exists():
+                return f"Parent directory does not exist: {resolved.parent}"
+
+            try:
+                if encoding.lower() == "base64":
+                    raw_bytes = base64.b64decode(content)
+                    if len(raw_bytes) > max_bytes:
+                        return f"Content too large: {len(raw_bytes):,} bytes (max {max_bytes:,})."
+                    resolved.write_bytes(raw_bytes)
+                    bytes_written = len(raw_bytes)
+                else:
+                    encoded = content.encode(encoding)
+                    if len(encoded) > max_bytes:
+                        return f"Content too large: {len(encoded):,} bytes (max {max_bytes:,})."
+                    resolved.write_text(content, encoding=encoding)
+                    bytes_written = len(encoded)
+            except (ValueError, UnicodeEncodeError) as e:
+                return f"Encoding error for '{encoding}': {e}"
+            except Exception as e:
+                return f"Error writing {resolved}: {e}"
+
+            ctx.deps.tool_log.append(ToolCallRecord(
+                tool="write_user_file",
+                input={"path": path, "encoding": encoding},
+                output_preview=f"Wrote {bytes_written:,} bytes to {resolved.name}",
+            ))
+            return f'{{"path": "{resolved}", "bytes_written": {bytes_written}}}'
 
     # ── call_client_function ──────────────────────────────────────────
 
