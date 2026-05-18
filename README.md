@@ -16,11 +16,12 @@ A pydantic-ai based SDK for building AI agents that discover and use skills via 
 
 ```
 skills/                          skill_agent/ (the SDK)
-  my_skill/                        agent.py              agent loop, run queue, event stream
-    SKILL.md                       models.py             Pydantic models, event types
-    scripts/                       messages.py           Message, SourceContext hierarchy
-    references/                    threads.py            Thread, ThreadRegistry, ThreadMessage
-    assets/                        thread_tools.py       read_thread, reply_to_thread, spawn_agent
+  my_skill/                        agent.py              Agent class, event stream, run/run_stream
+    SKILL.md                       run_queue.py          run queue worker, SSE fan-out, thread follow-up
+    scripts/                       models.py             Pydantic models, event types
+    references/                    messages.py           Message, SourceContext hierarchy
+    assets/                        threads.py            Thread, ThreadRegistry, ThreadMessage
+                                   thread_tools.py       read_thread, reply_to_thread, spawn_agent
                                    skill_tools.py        use_skill, run_script, manage_todos
                                    context_tools.py      compress_message, retrieve_message
                                    registry.py           SKILL.md discovery + parsing
@@ -28,15 +29,18 @@ skills/                          skill_agent/ (the SDK)
 
 native-skills/                   Built-in skills (bundled with SDK)
   learner/                         Meta-skill for acquiring new skills
+  web-search/                      DuckDuckGo-backed web search skill
 
 server/                          HTTP API (FastAPI)
   routes/
     runs.py                      POST /run, GET /runs/subscribe
     threads.py                   GET/POST /threads, GET /threads/subscribe
     skills.py                    GET /skills, POST /skills/upload
+    agent.py                     POST /agent/reset, /agent/configure, /agent/load; GET /agent/snapshot
     health.py                    GET /health
   services/
     sse.py                       SSE envelope formatting
+    archive.py                   Safe zip/tar extraction for skill uploads
 ```
 
 ## Quick Start
@@ -71,7 +75,7 @@ uv sync --extra server   # FastAPI server (uvicorn, fastapi, azure identity)
 
 **Run tests**
 ```bash
-uv run pytest tests/ -v   # 70 tests
+uv run pytest tests/ -v   # 109 tests
 ```
 
 ## Usage — Basic
@@ -662,11 +666,15 @@ All tools are automatically registered. The agent calls them during execution.
 | Tool | Purpose |
 |---|---|
 | `use_skill(name)` | Load a skill's full instructions (progressive disclosure) |
+| `register_skill(skill_dir_path)` | Register a newly-created skill directory for the current session |
+| `scaffold_skill(skill_name)` | Create a new skill directory with the standard skeleton and register it |
 | `manage_todos(action, ...)` | Plan and track internal task list (`add`, `update`, `complete`) |
 | `read_reference(skill, path)` | Read a document from skill's `references/` directory |
 | `run_script(skill, script, **kwargs)` | Execute Python script from skill's `scripts/` directory |
-| `read_user_file(path)` | Read file from `AgentConfig.user_file_roots` (if configured) |
+| `write_skill_file(skill, path, content)` | Create or update a file inside a skill's directory (respects `permissions.yaml`) |
 | `call_client_function(name, **kwargs)` | Request client-side function execution |
+| `read_user_file(path)` | *(Conditional)* Read file from `AgentConfig.user_file_roots` |
+| `write_user_file(path, content)` | *(Conditional)* Write file under `AgentConfig.user_file_roots` (utf-8 or base64) |
 | `read_thread(name)` | Fetch full thread with all messages |
 | `reply_to_thread(name, content)` | Send message to thread; triggers subagent run |
 | `archive_thread(name)` | Mark thread as archived (hidden from active list) |

@@ -15,7 +15,7 @@ uv sync --extra examples   # Include example skill dependencies (wikipedia-api)
 uv sync --extra server     # Include FastAPI server dependencies
 uv run Example.py          # Run the example CLI agent
 uv run run_server.py       # Run the HTTP server
-uv run pytest tests/ -v    # Run the test suite (70 tests)
+uv run pytest tests/ -v    # Run the test suite (109 tests)
 ```
 
 No linter is configured in pyproject.toml.
@@ -24,12 +24,13 @@ No linter is configured in pyproject.toml.
 
 ### Core SDK (`skill_agent/`)
 
-- **`agent.py`** — `Agent` class with `run()` (blocking), `run_stream()` (async generator), `enqueue_run()` / `enqueue_run_message()` (async queue), `subscribe_run()` / `subscribe_all_runs()` (SSE subscriptions). Maintains conversation state, dual message stores, thread registry, and run queue. Per-run mutable state lives in the `_RunDeps` dataclass injected via `RunContext.deps`. `_RunDeps` fields are **references** to Agent instance attributes, not copies.
+- **`agent.py`** — `Agent` class with `run()` (blocking), `run_stream()` (async generator), `enqueue_run()` / `enqueue_run_message()` (async queue), `subscribe_run()` / `subscribe_all_runs()` (SSE subscriptions). Maintains conversation state, dual message stores, thread registry, and run queue. Per-run mutable state lives in the `_RunDeps` dataclass injected via `RunContext.deps`. `_RunDeps` fields are **references** to Agent instance attributes, not copies. The queue/SSE/thread-notification implementations are factored into `run_queue.py`; the methods on `Agent` are thin delegators.
+- **`run_queue.py`** — `_QueuedRun` dataclass plus the run-queue worker (`run_queue_worker`), enqueue helpers, SSE fan-out (`publish_run_envelope`, `subscribe_run`, `subscribe_all_runs`), and the thread-notification follow-up logic (`register_thread_notification`, `queue_thread_follow_up`). Functions take an `Agent` instance and mutate its attributes (`_run_queue`, `_queued_runs`, `_queued_run_keys`, `_auto_thread_run_counts`, `_global_run_subscribers`, `_run_worker_task`).
 - **`models.py`** — All Pydantic models: `Skill`, `AgentConfig`, `AgentResult`, all event types (`AgentEvent` discriminated union), `TodoItem`, `ToolCallRecord`, `ClientFunction`/`ClientFunctionRequest`, `TokenUsage`.
 - **`messages.py`** — `Message` model (id, timestamp, type, content, summary) and `SourceContext` hierarchy (`UIContext`, `EmailContext`, `SubAgentContext`). Every conversation step is logged as a `Message`.
 - **`threads.py`** — `Thread`, `ThreadMessage`, `ThreadRole`, `ThreadStatus`, `ThreadRegistry`, `ThreadEvent`. Bidirectional message channels. `send()` = participant-authored (inbound, fires inbound listeners). `reply()` = agent-authored (outbound, fires outbound listeners). `ThreadMessage.events` carries the serialized `AgentEvent` list for the run that produced the message.
 - **`thread_tools.py`** — `read_thread`, `reply_to_thread`, `archive_thread`, `spawn_agent`. Registered as pydantic-ai tools. `spawn_agent` creates a plain `Agent` instance and wires bidirectional listeners: outbound (parent→subagent via `thread.reply()`) and inbound notification (subagent→parent via `thread.send()` → `_register_thread_notification`). The event loop is captured at spawn time and stored in the closure.
-- **`skill_tools.py`** — `use_skill`, `manage_todos`, `read_reference`, `run_script`, `write_skill_file`, `read_user_file`, `call_client_function`.
+- **`skill_tools.py`** — `use_skill`, `register_skill`, `scaffold_skill`, `manage_todos`, `read_reference`, `run_script`, `write_skill_file`, `call_client_function`, plus conditional `read_user_file` / `write_user_file` (registered only when `AgentConfig.user_file_roots` is set).
 - **`context_tools.py`** — `compress_message`, `retrieve_message`, `compress_all`. Auto-compression triggers when `input_tokens` exceeds `AgentConfig.context_compression_threshold` (default 100k).
 - **`registry.py`** — `discover_skills()` recursively scans directories for `SKILL.md` files with YAML-like frontmatter. Custom frontmatter parser (no PyYAML dependency). Also loads `client_functions.json` if present.
 - **`user_prompt_files.py`** — `build_user_message()` turns text + file paths into pydantic-ai message parts (text inlined, images as `BinaryContent`, PDFs extracted via pdfplumber).
@@ -44,9 +45,11 @@ FastAPI app with `create_app(agent=None)` factory pattern for dependency injecti
 - **`config.py`** — Server configuration loaded from environment / Azure Key Vault.
 - **`routes/runs.py`** — `POST /run` (queue + SSE stream), `GET /runs/subscribe` (global SSE).
 - **`routes/threads.py`** — `GET /threads`, `GET /threads/subscribe` (SSE), `GET /threads/{name}`, `POST /threads/{name}/messages`.
-- **`routes/skills.py`** — `GET /skills`, `POST /skills/upload`.
+- **`routes/skills.py`** — `GET /skills`, `POST /skills/upload` (accepts `.zip`/`.tar` archives).
+- **`routes/agent.py`** — `POST /agent/reset` (clear conversation), `POST /agent/configure` (update `skills_dir` / `user_file_roots` at runtime), `GET /agent/snapshot` (dump state as JSON for persistence), `POST /agent/load` (restore state from snapshot).
 - **`routes/health.py`** — `GET /health`.
 - **`services/sse.py`** — `format_run_envelope_sse()` formats run envelopes as SSE strings.
+- **`services/archive.py`** — `extract_skill_archive()` and `find_uploaded_skill_dir()`. Safe zip/tar extraction with path-traversal protection (`_ensure_within_root`). Used by `POST /skills/upload`.
 - **`models.py`** — Request/response Pydantic models. `ThreadItemResponse` and `ThreadMessageResponse` include an `events: list[dict]` field carrying the per-message event log.
 
 ### Key Design Decisions
@@ -66,11 +69,15 @@ FastAPI app with `create_app(agent=None)` factory pattern for dependency injecti
 | Tool | File | Purpose |
 |---|---|---|
 | `use_skill` | skill_tools.py | Load a skill's full instructions by name |
+| `register_skill` | skill_tools.py | Register a newly created skill directory so it becomes usable in this session |
+| `scaffold_skill` | skill_tools.py | Create a new skill directory with the standard skeleton and register it |
 | `manage_todos` | skill_tools.py | Plan and track an internal task list |
 | `read_reference` | skill_tools.py | Read a doc from a skill's `references/` directory |
 | `run_script` | skill_tools.py | Run a Python script from a skill's `scripts/` directory |
+| `write_skill_file` | skill_tools.py | Create or update a file inside a skill's directory (subject to permissions.yaml) |
 | `call_client_function` | skill_tools.py | Request execution of a client-declared function |
 | `read_user_file` | skill_tools.py | *(Conditional)* Read files under `AgentConfig.user_file_roots` |
+| `write_user_file` | skill_tools.py | *(Conditional)* Write files under `AgentConfig.user_file_roots` (supports utf-8 / base64) |
 | `compress_message` | context_tools.py | Compress a context window message to a summary |
 | `retrieve_message` | context_tools.py | Restore a compressed message from the log |
 | `compress_all` | context_tools.py | Replace entire context window with a summary |
@@ -114,7 +121,7 @@ skill-name/
 - **Environment**: `API_KEY` in `.env` (loaded via python-dotenv)
 - **Packages**: `skill_agent/` (SDK), `server/` (FastAPI app), `native-skills/` (bundled), `skills/` (user)
 - **Entry points**: `run_server.py` (API), `Example.py` (CLI reference)
-- **Tests**: `pytest` + `pytest-anyio` for async; 70 tests total
+- **Tests**: `pytest` with `anyio`-based async tests; 109 tests total
 
 ## Common Tasks
 

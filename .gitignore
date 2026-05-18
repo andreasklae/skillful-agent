@@ -5,12 +5,25 @@ dry_runs/
 # Large API spec files
 tripletex_openapi.json
 
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 .venv/
 venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Environment / secrets
 .env
@@ -21,3 +34,6 @@ venv/
 
 # Playground
 architecture-map.html
+
+# Local runtime state
+data/*.json
