@@ -28,6 +28,8 @@ class ServerSettings:
     azure_endpoint: str | None = None
     azure_api_key: str | None = None
     azure_api_version: str = "2024-07-01-preview"
+    # eX3 / local vLLM — if set, takes priority over Azure and OpenAI
+    ex3_base_url: str | None = None
     log_level: str = "INFO"
 
     @classmethod
@@ -41,12 +43,17 @@ class ServerSettings:
             azure_endpoint=os.getenv("SKILL_AGENT_AZURE_ENDPOINT"),
             azure_api_key=os.getenv("SKILL_AGENT_AZURE_API_KEY"),
             azure_api_version=os.getenv("SKILL_AGENT_AZURE_API_VERSION", "2024-07-01-preview"),
+            ex3_base_url=os.getenv("SKILL_AGENT_EX3_BASE_URL"),
             log_level=os.getenv("SKILL_AGENT_LOG_LEVEL", "INFO"),
         )
 
     @property
+    def use_ex3(self) -> bool:
+        return bool(self.ex3_base_url)
+
+    @property
     def use_azure(self) -> bool:
-        return bool(self.azure_endpoint)
+        return bool(self.azure_endpoint) and not self.use_ex3
 
     def parsed_cors_origins(self) -> list[str]:
         """Parse comma-separated CORS origins, defaulting to ["*"]."""

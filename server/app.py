@@ -66,7 +66,11 @@ def _build_agent(settings: ServerSettings) -> Agent:
 
     from skill_agent import Agent, AgentConfig
 
-    if settings.use_azure:
+    if settings.use_ex3:
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider(base_url=settings.ex3_base_url, api_key="dummy")
+    elif settings.use_azure:
         from pydantic_ai.providers.azure import AzureProvider
 
         api_key = settings.azure_api_key or resolve_openai_api_key(settings)
