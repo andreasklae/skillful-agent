@@ -2,6 +2,8 @@
 
 Public API:
     Agent             — Create with model + skills_dir, call run() or run_stream()
+    AgentError        — Base class for typed framework errors
+    AgentContextOverflowError — Raised when a model rejects a prompt for exceeding its context window
     AgentEvent        — Discriminated union of all event types
     TodoUpdateEvent   — Todo list state after each manage_todos call
     ToolCallEvent     — Tool invocation (name, args, optional activity)
@@ -27,6 +29,7 @@ Public API:
 """
 
 from .agent import Agent
+from .exceptions import AgentContextOverflowError, AgentError
 from .user_prompt_files import build_user_message
 from .models import (
     AgentConfig,
@@ -64,6 +67,8 @@ from .threads import (
 
 __all__ = [
     "Agent",
+    "AgentError",
+    "AgentContextOverflowError",
     "build_user_message",
     "AgentConfig",
     "AgentEvent",

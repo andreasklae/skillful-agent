@@ -155,3 +155,18 @@ agent = Agent(model=model, skills_dir=Path("skills"), config=config)
 ```bash
 uv run pytest tests/ -v
 ```
+
+**Handle context-overflow gracefully**
+```python
+from skill_agent import Agent, AgentContextOverflowError
+
+try:
+    async for event in agent.run_stream(prompt):
+        ...
+except AgentContextOverflowError as exc:
+    # exc.requested_input_tokens, exc.model_context_limit, exc.provider_message
+    # Auto-compression in _event_stream is post-run; this exception fires when
+    # the request itself overflows. Recover by clearing history, compressing,
+    # or surfacing as a graceful failure.
+    log.warning("agent context overflow: %s", exc)
+```

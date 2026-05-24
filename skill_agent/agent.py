@@ -31,6 +31,7 @@ Call ``agent.clear_conversation()`` to start a new thread.
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +52,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
 
+from .exceptions import AgentContextOverflowError
 from .models import (
     AgentConfig,
     AgentEvent,
@@ -496,13 +498,37 @@ class Agent:
                         msg = dataclasses.replace(msg, parts=patched_parts)
                 hist.append(msg)
 
-        async for raw in self._runner.run_stream_events(
-            user_message,
-            deps=self._deps,
-            model_settings=self._model_settings,
-            usage_limits=self._usage_limits,
-            message_history=hist,
-        ):
+        try:
+            stream = self._runner.run_stream_events(
+                user_message,
+                deps=self._deps,
+                model_settings=self._model_settings,
+                usage_limits=self._usage_limits,
+                message_history=hist,
+            )
+        except Exception as exc:
+            _maybe_raise_context_overflow(exc)
+            raise
+
+        raw_iter = stream.__aiter__()
+        while True:
+            try:
+                raw = await raw_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except Exception as exc:
+                # Provider/SDK errors surface during iteration (e.g. an
+                # OpenAI BadRequestError on context overflow). Translate
+                # known patterns into typed exceptions; re-raise others
+                # unchanged so existing handlers still see them.
+                # TODO(post-baseline): on AgentContextOverflowError, run
+                # compress_all_impl on the current context_window and
+                # retry the request once before giving up. This is the
+                # natural pairing of post-run auto-compression below
+                # (~line 643), which only fires AFTER a successful run.
+                _maybe_raise_context_overflow(exc)
+                raise
+
             # The LLM is calling a tool
             if isinstance(raw, FunctionToolCallEvent):
                 args = dict(raw.part.args_as_dict())
@@ -618,7 +644,10 @@ class Agent:
                     except KeyError:
                         pass
 
-                # Auto-compression check
+                # Auto-compression check. NOTE: this fires AFTER a successful
+                # run; it cannot prevent a pre-flight overflow. See the TODO
+                # in the iteration error handler above for the planned retry
+                # pairing.
                 threshold = self._deps.context_compression_threshold
                 if input_tokens > threshold and len(self.context_window) > 1:
                     from .context_tools import compress_all_impl, build_generic_summary
@@ -761,3 +790,42 @@ def _create_runner(
     register_thread_tools(runner)
 
     return runner
+
+
+# ── Provider-error translation ─────────────────────────────────────────
+#
+# Provider SDKs (currently OpenAI's) raise their own typed errors that
+# bubble up through pydantic-ai unchanged. We translate one specific case
+# — context-length overflow — into a typed AgentContextOverflowError so
+# callers can recover without parsing provider-specific error strings.
+
+# Matches OpenAI/vLLM's standard overflow message:
+#   "This model's maximum context length is 65536 tokens. However, you
+#    requested 4096 output tokens and your prompt contains at least
+#    61441 input tokens, for a total of at least 65537 tokens."
+_OVERFLOW_PATTERN = re.compile(
+    r"maximum context length is\s+(?P<limit>\d+)\s+tokens.*?"
+    r"prompt contains at least\s+(?P<input>\d+)\s+input tokens",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _maybe_raise_context_overflow(exc: BaseException) -> None:
+    """Translate a context-overflow provider error into AgentContextOverflowError.
+
+    Returns silently if `exc` does not look like a context-overflow error.
+    The caller must `raise` (or re-raise) afterwards if this returns.
+    """
+    msg = str(exc)
+    if "maximum context length" not in msg.lower():
+        return
+    match = _OVERFLOW_PATTERN.search(msg)
+    limit = int(match.group("limit")) if match else None
+    requested = int(match.group("input")) if match else None
+    raise AgentContextOverflowError(
+        f"Model rejected prompt: {requested or '?'} input tokens exceeds "
+        f"context limit of {limit or '?'}.",
+        requested_input_tokens=requested,
+        model_context_limit=limit,
+        provider_message=msg,
+    ) from exc
