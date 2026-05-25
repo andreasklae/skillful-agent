@@ -120,8 +120,18 @@ ActivityDesc = Annotated[
 # ── Tool registration ────────────────────────────────────────────────
 
 
-def register_skill_tools(runner: Any, user_file_roots: tuple[Path, ...]) -> None:
-    """Register all skill-related tools on the pydantic-ai runner."""
+def register_skill_tools(
+    runner: Any,
+    user_file_roots: tuple[Path, ...],
+    disabled_tools: frozenset[str] = frozenset(),
+) -> None:
+    """Register all skill-related tools on the pydantic-ai runner.
+
+    Tools whose function names appear in ``disabled_tools`` are skipped —
+    they are still defined as local functions (preserving closures), but
+    are not exposed to the model."""
+    from ._tool_filter import filtered_runner
+    runner = filtered_runner(runner, disabled_tools)
 
     # ── use_skill ─────────────────────────────────────────────────────
 

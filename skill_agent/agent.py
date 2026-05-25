@@ -179,7 +179,12 @@ class Agent:
         )
 
         self._reload_skills(rebuild_runner=False)
-        self._runner = _create_runner(model, self._system_prompt, roots)
+        self._runner = _create_runner(
+            model,
+            self._system_prompt,
+            roots,
+            disabled_tools=tuple(cfg.disabled_tools),
+        )
         self._model_settings = ModelSettings(max_tokens=cfg.max_tokens)
         self._usage_limits = UsageLimits(
             request_limit=cfg.max_turns if cfg.max_turns is not None else None,
@@ -250,7 +255,12 @@ class Agent:
         self._deps.user_file_roots = resolved
         self._deps.max_user_file_write_bytes = self._config.max_user_file_write_bytes
         self._system_prompt = self._build_runtime_system_prompt(self._skills)
-        self._runner = _create_runner(self._model, self._system_prompt, resolved)
+        self._runner = _create_runner(
+            self._model,
+            self._system_prompt,
+            resolved,
+            disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
+        )
         logger.info("user_file_roots_updated roots=%s", [str(r) for r in resolved])
 
     def set_skills_dir(self, skills_dir: Path | str) -> list[str]:
@@ -673,9 +683,10 @@ class Agent:
     def _reload_skills(self, *, rebuild_runner: bool) -> list[str]:
         from .registry import discover_skills
 
+        disable_native = getattr(self._config, "disable_native_skills", False)
         native_skills = (
             discover_skills(self._native_skills_dir)
-            if self._native_skills_dir.is_dir()
+            if self._native_skills_dir.is_dir() and not disable_native
             else {}
         )
         user_skills = discover_skills(self._skills_dir)
@@ -696,7 +707,12 @@ class Agent:
 
         roots = tuple(Path(p).expanduser().resolve() for p in self._config.user_file_roots)
         if rebuild_runner:
-            self._runner = _create_runner(self._model, self._system_prompt, roots)
+            self._runner = _create_runner(
+                self._model,
+                self._system_prompt,
+                roots,
+                disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
+            )
 
         return sorted(all_skills)
 
@@ -772,8 +788,17 @@ def _create_runner(
     model: Model,
     system_prompt: str,
     user_file_roots: tuple[Path, ...],
+    disabled_tools: tuple[str, ...] = (),
 ) -> PydanticAgent[_RunDeps, str]:
-    """Build the pydantic-ai runner and register all tools."""
+    """Build the pydantic-ai runner and register all tools.
+
+    ``disabled_tools`` is an iterable of tool names that should not be
+    registered with the runner. Each ``register_*_tools`` registrar is
+    given the full set; matching tools are silently skipped so the
+    model never sees them as callable. Unknown names are no-ops — this
+    keeps the API permissive for downstream callers without forcing
+    them to track which tools currently exist.
+    """
     from .skill_tools import register_skill_tools
     from .context_tools import register_context_tools
     from .thread_tools import register_thread_tools
@@ -785,9 +810,10 @@ def _create_runner(
         output_type=str,
     )
 
-    register_skill_tools(runner, user_file_roots)
-    register_context_tools(runner)
-    register_thread_tools(runner)
+    disabled = frozenset(disabled_tools)
+    register_skill_tools(runner, user_file_roots, disabled_tools=disabled)
+    register_context_tools(runner, disabled_tools=disabled)
+    register_thread_tools(runner, disabled_tools=disabled)
 
     return runner
 

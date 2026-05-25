@@ -150,8 +150,15 @@ def build_generic_summary(
     return summary, instruction
 
 
-def register_context_tools(runner: Any) -> None:
-    """Register compress_message, retrieve_message, and compress_all as pydantic-ai tools."""
+def register_context_tools(
+    runner: Any,
+    disabled_tools: frozenset[str] = frozenset(),
+) -> None:
+    """Register compress_message, retrieve_message, and compress_all as pydantic-ai tools.
+
+    Tools whose function names appear in ``disabled_tools`` are skipped."""
+    from ._tool_filter import filtered_runner
+    runner = filtered_runner(runner, disabled_tools)
 
     @runner.tool(description=(
         "Compress a message in the context window by replacing its content with a summary. "

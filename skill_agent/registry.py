@@ -97,13 +97,20 @@ def _parse_frontmatter(raw: str) -> dict[str, str]:
 
 
 def _list_files(directory: Path) -> list[str]:
-    """List filenames in a directory, excluding hidden files and __pycache__."""
+    """List filenames in a directory, excluding hidden files, __pycache__,
+    and underscore-prefixed files.
+
+    Underscore-prefixed files (``_foo.py``) are treated as private helpers
+    that other scripts in the same directory may import but the agent
+    should not call directly. This matches Python's own convention for
+    module privacy and keeps internal-helper files out of the model's
+    visible tool surface."""
     if not directory.is_dir():
         return []
     return sorted(
         f.name
         for f in directory.iterdir()
-        if f.is_file() and not f.name.startswith(".")
+        if f.is_file() and not f.name.startswith(".") and not f.name.startswith("_")
     )
 
 

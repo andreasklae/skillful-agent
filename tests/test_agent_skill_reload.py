@@ -22,7 +22,7 @@ def test_reload_skills_updates_registry_and_runner(monkeypatch, tmp_path):
 
     created_runners: list[tuple[object, str, tuple[Path, ...]]] = []
 
-    def fake_create_runner(model, system_prompt, user_file_roots):
+    def fake_create_runner(model, system_prompt, user_file_roots, disabled_tools=()):
         created_runners.append((model, system_prompt, user_file_roots))
         return "runner"
 

@@ -124,8 +124,15 @@ def archive_thread_impl(
 # ── Tool registration ────────────────────────────────────────────────
 
 
-def register_thread_tools(runner: Any) -> None:
-    """Register thread and spawn tools on the pydantic-ai runner."""
+def register_thread_tools(
+    runner: Any,
+    disabled_tools: frozenset[str] = frozenset(),
+) -> None:
+    """Register thread and spawn tools on the pydantic-ai runner.
+
+    Tools whose function names appear in ``disabled_tools`` are skipped."""
+    from ._tool_filter import filtered_runner
+    runner = filtered_runner(runner, disabled_tools)
 
     @runner.tool(description=(
         "Read all messages in a named thread. Returns the full conversation history. "

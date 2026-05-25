@@ -343,3 +343,23 @@ class AgentConfig(BaseModel):
         default=100_000,
         description="Auto-compress context_window when input_tokens exceeds this threshold.",
     )
+    disabled_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of built-in tools to suppress from this agent. The matching tools are "
+            "not registered with the pydantic-ai runner, so the model never sees them as "
+            "callable. Useful for narrowing the tool surface in domain-specific agents "
+            "(e.g. a chess agent that does not need manage_todos or read_user_file). "
+            "Names must match the tool's registered name (e.g. 'manage_todos', "
+            "'read_thread', 'spawn_agent')."
+        ),
+    )
+    disable_native_skills: bool = Field(
+        default=False,
+        description=(
+            "If True, skip loading skills bundled with the SDK (under native-skills/) — "
+            "only skills from user-provided skills_dir are discovered. Useful for "
+            "domain-specific agents that should not see general-purpose native skills "
+            "(e.g. a chess agent that has no reason to invoke web-search-free)."
+        ),
+    )
