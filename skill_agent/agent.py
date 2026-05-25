@@ -573,7 +573,8 @@ class Agent:
                     raw.result.tool_name,
                     str(raw.result.content)[:400],
                 )
-                _ev = ToolResultEvent(name=raw.result.tool_name)
+                _result_str = raw.result.content if isinstance(raw.result.content, str) else None
+                _ev = ToolResultEvent(name=raw.result.tool_name, result=_result_str)
                 run_events.append(_ev)
                 yield _ev
                 result_msg = Message(
@@ -725,7 +726,8 @@ class Agent:
             return False
 
     def _build_runtime_system_prompt(self, skills: dict[str, Skill]) -> str:
-        prompt = _build_system_prompt(skills, self._config.system_prompt_extra)
+        disabled = frozenset(getattr(self._config, "disabled_tools", None) or ())
+        prompt = _build_system_prompt(skills, self._config.system_prompt_extra, disabled_tools=disabled)
         roots = tuple(Path(p).expanduser().resolve() for p in self._config.user_file_roots)
         if roots:
             listed = ", ".join(str(r) for r in roots)
@@ -756,8 +758,16 @@ class Agent:
 _SYSTEM_PROMPT_TEMPLATE_PATH = Path(__file__).with_name("system_prompt.md")
 
 
-def _build_system_prompt(skills: dict[str, Skill], extra: str | None) -> str:
+def _build_system_prompt(
+    skills: dict[str, Skill],
+    extra: str | None,
+    disabled_tools: frozenset[str] = frozenset(),
+) -> str:
     template = _SYSTEM_PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+
+    if disabled_tools:
+        template = _strip_disabled_tools_from_template(template, disabled_tools)
+
     skill_lines = "\n".join(
         f"  - **{name}**: {skill.description}" for name, skill in skills.items()
     )
@@ -777,6 +787,81 @@ def _build_system_prompt(skills: dict[str, Skill], extra: str | None) -> str:
     if extra:
         prompt += f"\n\n{extra}"
     return prompt
+
+
+_ALL_KNOWN_TOOLS: frozenset[str] = frozenset({
+    "use_skill", "run_script", "read_reference",
+    "manage_todos",
+    "read_thread", "reply_to_thread", "archive_thread", "spawn_agent",
+    "compress_message", "retrieve_message", "compress_all",
+    "read_user_file", "write_user_file",
+    "call_client_function", "register_skill", "scaffold_skill",
+    "write_skill_file",
+})
+
+
+def _strip_disabled_tools_from_template(template: str, disabled_tools: frozenset[str]) -> str:
+    """Remove disabled tool entries from the system prompt template.
+
+    Strips bullet lines that start with ``  - **<tool_name>**`` for every
+    disabled tool name, and removes numbered rules whose only tool references
+    are to disabled tools (so rules that mix enabled + disabled tools survive).
+    """
+    import re as _re
+
+    lines = template.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Strip bullet-list tool entries:  "  - **tool_name**: ..."
+        stripped = line.strip()
+        if stripped.startswith("- **"):
+            end = stripped.find("**", 4)
+            if end != -1:
+                tool_name = stripped[4:end]
+                if tool_name in disabled_tools:
+                    i += 1
+                    continue
+
+        # Strip numbered rules whose ONLY tool references are disabled tools.
+        # Rules look like "N. text" with possible indented continuation lines.
+        if _re.match(r"^\d+\.\s", line):
+            rule_lines = [line]
+            j = i + 1
+            while j < len(lines) and lines[j] and lines[j][0] in (" ", "\t"):
+                rule_lines.append(lines[j])
+                j += 1
+            rule_text = " ".join(rule_lines)
+            mentioned_tools = set(_re.findall(r"`(\w+)`", rule_text)) & _ALL_KNOWN_TOOLS
+            # Drop if ALL tool references are to disabled tools (and at least one exists)
+            if mentioned_tools and mentioned_tools <= disabled_tools:
+                i = j
+                continue
+
+        out.append(line)
+        i += 1
+
+    # Remove section headings that now have no bullet entries under them.
+    # A heading is empty if it is followed immediately by another heading,
+    # an empty line then a heading, or end-of-content.
+    result_lines = out
+    cleaned: list[str] = []
+    for idx, l in enumerate(result_lines):
+        if l.startswith("## "):
+            # Look ahead past blank lines to see if the next non-blank line
+            # is another heading or end-of-content.
+            peek = idx + 1
+            while peek < len(result_lines) and result_lines[peek].strip() == "":
+                peek += 1
+            next_non_blank = result_lines[peek] if peek < len(result_lines) else ""
+            if next_non_blank.startswith("## ") or next_non_blank == "":
+                # Empty section — skip the heading AND trailing blanks
+                continue
+        cleaned.append(l)
+
+    return "\n".join(cleaned)
 
 
 # ── Runner factory ─────────────────────────────────────────────────────
