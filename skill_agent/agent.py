@@ -768,22 +768,29 @@ def _build_system_prompt(
     if disabled_tools:
         template = _strip_disabled_tools_from_template(template, disabled_tools)
 
-    skill_lines = "\n".join(
-        f"  - **{name}**: {skill.description}" for name, skill in skills.items()
-    )
-    skills_section = (
-        "## Available skills (call `use_skill` to load full instructions)\n"
-        f"{skill_lines}"
-    )
     lines = template.splitlines()
-    try:
-        first_heading = next(i for i, line in enumerate(lines) if line.startswith("## "))
-    except StopIteration:
-        prompt = f"{template}\n\n{skills_section}"
+    # Only include the skills listing when use_skill is available; if it is
+    # disabled, the caller is responsible for including skill content another
+    # way (e.g. via system_prompt_extra), and showing the listing without a
+    # callable tool to load them would mislead the model.
+    if "use_skill" not in disabled_tools:
+        skill_lines = "\n".join(
+            f"  - **{name}**: {skill.description}" for name, skill in skills.items()
+        )
+        skills_section = (
+            "## Available skills (call `use_skill` to load full instructions)\n"
+            f"{skill_lines}"
+        )
+        try:
+            first_heading = next(i for i, line in enumerate(lines) if line.startswith("## "))
+        except StopIteration:
+            prompt = f"{template}\n\n{skills_section}"
+        else:
+            head = "\n".join(lines[:first_heading]).rstrip()
+            tail = "\n".join(lines[first_heading:])
+            prompt = f"{head}\n\n{skills_section}\n\n{tail}"
     else:
-        head = "\n".join(lines[:first_heading]).rstrip()
-        tail = "\n".join(lines[first_heading:])
-        prompt = f"{head}\n\n{skills_section}\n\n{tail}"
+        prompt = template
     if extra:
         prompt += f"\n\n{extra}"
     return prompt
