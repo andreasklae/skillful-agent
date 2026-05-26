@@ -897,12 +897,22 @@ def _create_runner(
     from .context_tools import register_context_tools
     from .thread_tools import register_thread_tools
 
+    # Wrap each history processor in the pydantic-ai capability class.
+    # The name changed between pydantic-ai 1.x (HistoryProcessor) and 2.x
+    # (ProcessHistory); try the new name first, fall back to the old one.
+    try:
+        from pydantic_ai.capabilities import ProcessHistory as _HistCls
+    except ImportError:
+        from pydantic_ai.capabilities import HistoryProcessor as _HistCls  # type: ignore[no-redef]
+
+    capabilities = [_HistCls(p) for p in (history_processors or [])]
+
     runner: PydanticAgent[_RunDeps, str] = PydanticAgent(
         model=model,
         system_prompt=system_prompt,
         deps_type=_RunDeps,
         output_type=str,
-        history_processors=history_processors or None,
+        capabilities=capabilities or None,
     )
 
     disabled = frozenset(disabled_tools)
