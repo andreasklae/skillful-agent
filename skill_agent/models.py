@@ -371,3 +371,13 @@ class AgentConfig(BaseModel):
             "(e.g. a chess agent that has no reason to invoke web-search-free)."
         ),
     )
+    history_processors: list[Any] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "List of pydantic-ai HistoryProcessor callables. Each processor receives "
+            "the full list[ModelMessage] before every model request and returns a "
+            "(possibly trimmed or rewritten) list. Processors run in order. "
+            "Excluded from serialisation because callables are not JSON-serialisable."
+        ),
+    )

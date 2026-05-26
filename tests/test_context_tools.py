@@ -94,3 +94,43 @@ def test_build_generic_summary_empty_log():
     summary, instruction = build_generic_summary([], [])
     assert "compressed" in summary.lower()
     assert instruction
+
+
+def test_compress_all_rewrites_conversation_messages():
+    """compress_all_impl with agent_ref must rewrite _conversation_messages."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse
+
+    log, window = _make_messages(5)
+
+    class FakeAgent:
+        _conversation_messages: list = [object(), object(), object()]
+
+    agent_ref = FakeAgent()
+    compress_all_impl(log, window, "summary text", "resume instruction", agent_ref=agent_ref)
+
+    msgs = agent_ref._conversation_messages
+    assert len(msgs) == 2
+    assert isinstance(msgs[0], ModelRequest)
+    assert isinstance(msgs[1], ModelResponse)
+    assert "summary text" in msgs[0].parts[0].content
+    assert "resume instruction" in msgs[0].parts[0].content
+
+
+def test_compress_all_without_agent_ref_leaves_conversation_messages_untouched():
+    """Passing no agent_ref must not raise and must not touch any external state."""
+    log, window = _make_messages(3)
+    result = compress_all_impl(log, window, "summary", "instruction")
+    assert "compressed" in result.lower()
+
+
+def test_agentconfig_accepts_history_processors():
+    """AgentConfig must store callable history processors without serialisation errors."""
+    from skill_agent import AgentConfig
+
+    def my_processor(messages):
+        return messages[-2:]
+
+    cfg = AgentConfig(history_processors=[my_processor])
+    assert cfg.history_processors[0] is my_processor
+    # Serialisation must not raise (callable is excluded)
+    cfg.model_dump()

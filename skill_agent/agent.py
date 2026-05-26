@@ -184,6 +184,7 @@ class Agent:
             self._system_prompt,
             roots,
             disabled_tools=tuple(cfg.disabled_tools),
+            history_processors=list(cfg.history_processors),
         )
         self._model_settings = ModelSettings(max_tokens=cfg.max_tokens)
         self._usage_limits = UsageLimits(
@@ -260,6 +261,7 @@ class Agent:
             self._system_prompt,
             resolved,
             disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
+            history_processors=list(getattr(self._config, "history_processors", None) or []),
         )
         logger.info("user_file_roots_updated roots=%s", [str(r) for r in resolved])
 
@@ -666,7 +668,8 @@ class Agent:
                         self.message_log, self._deps.todo_list
                     )
                     compress_all_impl(
-                        self.message_log, self.context_window, summary, instruction
+                        self.message_log, self.context_window, summary, instruction,
+                        agent_ref=self,
                     )
 
                 yield _complete_ev
@@ -713,6 +716,7 @@ class Agent:
                 self._system_prompt,
                 roots,
                 disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
+                history_processors=list(getattr(self._config, "history_processors", None) or []),
             )
 
         return sorted(all_skills)
@@ -874,6 +878,7 @@ def _create_runner(
     system_prompt: str,
     user_file_roots: tuple[Path, ...],
     disabled_tools: tuple[str, ...] = (),
+    history_processors: list[Any] | None = None,
 ) -> PydanticAgent[_RunDeps, str]:
     """Build the pydantic-ai runner and register all tools.
 
@@ -883,6 +888,10 @@ def _create_runner(
     model never sees them as callable. Unknown names are no-ops — this
     keeps the API permissive for downstream callers without forcing
     them to track which tools currently exist.
+
+    ``history_processors`` is an optional list of pydantic-ai
+    HistoryProcessor callables that intercept and rewrite
+    ``_conversation_messages`` before every model request.
     """
     from .skill_tools import register_skill_tools
     from .context_tools import register_context_tools
@@ -893,6 +902,7 @@ def _create_runner(
         system_prompt=system_prompt,
         deps_type=_RunDeps,
         output_type=str,
+        history_processors=history_processors or None,
     )
 
     disabled = frozenset(disabled_tools)

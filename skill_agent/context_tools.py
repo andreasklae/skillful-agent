@@ -5,6 +5,11 @@ by compressing old messages to summaries and retrieving them when needed.
 
 The implementation functions (*_impl) are pure logic operating on lists.
 register_context_tools() wires them as pydantic-ai tools on the runner.
+
+compress_all_impl accepts an optional ``agent_ref`` — the Agent instance.
+When supplied it also rewrites ``agent_ref._conversation_messages`` (the
+pydantic-ai layer that the model actually sees as history) so the compression
+takes real effect, not just in the SDK bookkeeping stores.
 """
 
 from __future__ import annotations
@@ -81,21 +86,30 @@ def compress_all_impl(
     context_window: list[Message],
     summary: str,
     instruction: str,
+    agent_ref: Any = None,
 ) -> str:
-    """Replace the entire context window with a single summary message."""
+    """Replace the entire context window with a single summary message.
+
+    When ``agent_ref`` is supplied (the Agent instance), also rewrites
+    ``agent_ref._conversation_messages`` — the pydantic-ai list that the
+    model actually sees as prior history — so the compression takes real
+    effect beyond the SDK bookkeeping stores.
+    """
     if not context_window:
         return "Context window is already empty."
 
     first_id = context_window[0].id
     last_id = context_window[-1].id
 
+    summary_content = (
+        f"[Context compressed: messages {first_id} through {last_id}]\n\n"
+        f"Summary: {summary}\n\n"
+        f"Resumption instruction: {instruction}"
+    )
+
     compressed = Message(
         type=MessageType.system,
-        content=(
-            f"[Context compressed: messages {first_id} through {last_id}]\n\n"
-            f"Summary: {summary}\n\n"
-            f"Resumption instruction: {instruction}"
-        ),
+        content=summary_content,
     )
 
     notification = Message(
@@ -109,6 +123,15 @@ def compress_all_impl(
 
     message_log.append(compressed)
     message_log.append(notification)
+
+    # Keep pydantic-ai's _conversation_messages in sync so the model actually
+    # sees the compressed history on the next run.
+    if agent_ref is not None:
+        from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+        agent_ref._conversation_messages[:] = [
+            ModelRequest(parts=[UserPromptPart(content=summary_content)]),
+            ModelResponse(parts=[TextPart(content="Understood.")]),
+        ]
 
     return f"Compressed {last_id} — context window now contains summary only."
 
@@ -199,5 +222,6 @@ def register_context_tools(
         activity: ActivityDesc = "",
     ) -> str:
         return compress_all_impl(
-            ctx.deps.message_log, ctx.deps.context_window, summary, instruction
+            ctx.deps.message_log, ctx.deps.context_window, summary, instruction,
+            agent_ref=ctx.deps._agent_ref,
         )
