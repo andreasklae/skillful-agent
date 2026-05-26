@@ -424,7 +424,8 @@ def register_skill_tools(
 
     @runner.tool(description=(
         "Run a Python script bundled with a skill. "
-        "Provide skill_name, filename, and an optional JSON-encoded args string. "
+        "Provide skill_name, filename, and an optional args string in shell format "
+        "(e.g. '--uci e2e4' or '--flag value other_value'). Do NOT use JSON format for args. "
         "Returns JSON with keys: ok, stdout, stderr, exit_code."
     ))
     def run_script(
