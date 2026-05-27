@@ -423,19 +423,20 @@ def register_skill_tools(
 
     @runner.tool(description=(
         "Run a Python script bundled with a skill. "
-        "Provide skill_name, filename, and an optional args list. "
-        "Each element of args becomes one entry in the script's sys.argv "
-        "(e.g. args=['--uci', 'e2e4'] or args=['--flag', 'value', 'positional']). "
-        "Do NOT embed shell quoting; do NOT put multiple flags into a single string. "
-        "Free text (like a reasoning note) is one element: "
-        "args=['--uci', 'e2e4', '--reasoning', 'Pushed pawn to control center.']. "
+        "Provide skill_name, filename, and args as a list of strings. "
+        "Each element of args becomes one entry in the script's sys.argv. "
+        "For scripts that take no arguments, pass args=[]. "
+        "For scripts that take a single move, pass args=['e2e4']. "
+        "For scripts with multi-token free text, each token (or the whole text "
+        "as one element) is one list entry; do NOT embed shell quoting. "
+        "Example with free text: args=['e2e4', 'Pushed pawn to control center.']. "
         "Returns JSON with keys: ok, stdout, stderr, exit_code."
     ))
     def run_script(
         ctx: RunContext,
         skill_name: str,
         filename: str,
-        args: list[str] | None = None,
+        args: list[str],
         activity: ActivityDesc = "",
     ) -> str:
         skill = ctx.deps.skills.get(skill_name)
