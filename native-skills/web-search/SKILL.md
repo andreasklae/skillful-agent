@@ -26,12 +26,12 @@ Both live in `scripts/` next to this file. Run them via the `run_script` tool wi
 ### Search
 
 ```
-run_script(skill_name="web-search-free", filename="search.py", args="<query>")
+run_script(skill_name="web-search-free", filename="search.py", args=["<query>"])
 ```
 
 - `filename` is `"search.py"` — **not** `"scripts/search.py"`. The `scripts/` prefix is handled automatically.
-- `args` is the query string. For multi-word queries wrap in shell quotes so `shlex` keeps them as one argument: `args='"fun facts Germany"'` → `sys.argv[1] = "fun facts Germany"`. A bare unquoted string like `args="fun facts Germany"` would be split into three separate argv items and only the first word would be used as the query.
-- Default result limit is 10. To override: `args='"fun facts Germany" 5'`
+- `args` is a list of strings. Each element becomes one `sys.argv` entry — no shell quoting, no escaping. The query is one element regardless of how many words it has: `args=["fun facts Germany"]` → `sys.argv[1] = "fun facts Germany"`.
+- Default result limit is 10. To override, pass the limit as a second element: `args=["fun facts Germany", "5"]`.
 
 Output JSON:
 ```json
@@ -43,14 +43,13 @@ Pick the 1–3 most promising hits and fetch those — don't fetch every result.
 ### Fetch
 
 ```
-run_script(skill_name="web-search-free", filename="fetch.py", args="https://example.com")
-run_script(skill_name="web-search-free", filename="fetch.py", args="https://example.com 30000")
+run_script(skill_name="web-search-free", filename="fetch.py", args=["https://example.com"])
+run_script(skill_name="web-search-free", filename="fetch.py", args=["https://example.com", "30000"])
 ```
 
 - `filename` is `"fetch.py"` — **not** `"scripts/fetch.py"`.
-- Pass URL and optional `max_chars` as a space-separated string in `args`. They are split by `shlex` into separate argv items, so no quoting is needed for URLs (they contain no spaces).
+- `args` is a list: URL first, optional `max_chars` as a second element. Each is a separate string — no quoting, no concatenation.
 - Default cap is 10,000 characters. Bump to 30000 when a single page is your whole answer.
-- Do **not** wrap the URL in quotes inside `args` — that adds literal `"` characters and causes `unknown url type`.
 
 Output JSON:
 ```json

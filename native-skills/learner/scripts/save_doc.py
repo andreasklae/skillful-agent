@@ -3,8 +3,7 @@
 
 Usage (via run_script):
     run_script(skill_name="learner", filename="save_doc.py",
-               args='{"skill_path": "/path/to/skill", "source": "wikipedia",
-                      "query": "Oseberg ship", "language": "en"}')
+               args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
 
 The agent never handles the large content — this script fetches and writes
 in one step, keeping articles out of the context window entirely.

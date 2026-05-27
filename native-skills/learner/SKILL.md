@@ -156,8 +156,10 @@ prompt — pass them to `list_skill_tree.py`:
 
 ```
 run_script(skill_name="learner", filename="list_skill_tree.py",
-           args='{"roots": ["/path/to/Research", "/path/to/Learning"]}')
+           args=['{"roots": ["/path/to/Research", "/path/to/Learning"]}'])
 ```
+
+The script consumes `sys.argv[1]` as a JSON blob, so wrap the JSON string in a single-element list.
 
 Use the paths from the "User skill directories" section of the system prompt.
 
@@ -219,9 +221,10 @@ this is the primary mechanism for "save, don't load":
 
 ```
 run_script(skill_name="learner", filename="save_doc.py",
-           args='{"skill_path": "/path/to/skill", "source": "wikipedia",
-                  "query": "Oseberg ship", "language": "en"}')
+           args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
 ```
+
+`save_doc.py` reads `sys.argv[1]` as a JSON blob — wrap the whole JSON string as one element in `args`.
 
 Supported sources:
 - `wikipedia` — Fetch a full article by title. Args: `query` (title),

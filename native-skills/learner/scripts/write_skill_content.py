@@ -3,7 +3,7 @@
 
 Usage (via run_script):
     run_script(skill_name="learner", filename="write_skill_content.py",
-               args='{"path": "/abs/path/to/file.md", "content": "file content"}')
+               args=['{"path": "/abs/path/to/file.md", "content": "file content"}'])
 
 Reads args from stdin (piped by run_script) for reliable handling of large
 content and special characters. Falls back to sys.argv[1] for small inputs.

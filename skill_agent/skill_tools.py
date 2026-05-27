@@ -5,7 +5,6 @@ Extracted from agent.py to keep each file focused on one concern.
 """
 
 import json
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -424,15 +423,19 @@ def register_skill_tools(
 
     @runner.tool(description=(
         "Run a Python script bundled with a skill. "
-        "Provide skill_name, filename, and an optional args string in shell format "
-        "(e.g. '--uci e2e4' or '--flag value other_value'). Do NOT use JSON format for args. "
+        "Provide skill_name, filename, and an optional args list. "
+        "Each element of args becomes one entry in the script's sys.argv "
+        "(e.g. args=['--uci', 'e2e4'] or args=['--flag', 'value', 'positional']). "
+        "Do NOT embed shell quoting; do NOT put multiple flags into a single string. "
+        "Free text (like a reasoning note) is one element: "
+        "args=['--uci', 'e2e4', '--reasoning', 'Pushed pawn to control center.']. "
         "Returns JSON with keys: ok, stdout, stderr, exit_code."
     ))
     def run_script(
         ctx: RunContext,
         skill_name: str,
         filename: str,
-        args: str = "",
+        args: list[str] | None = None,
         activity: ActivityDesc = "",
     ) -> str:
         skill = ctx.deps.skills.get(skill_name)
@@ -457,10 +460,7 @@ def register_skill_tools(
 
         cmd = [sys.executable, str(script_path)]
         if args:
-            try:
-                cmd.extend(shlex.split(args))
-            except ValueError:
-                cmd.append(args)
+            cmd.extend(args)
 
         stdout, stderr, exit_code, ok, truncated = "", "", 1, False, False
 
