@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
-from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai import RunContext
 
 from .models import (
     ClientFunctionRequest,
@@ -194,14 +194,10 @@ def register_skill_tools(
             )
 
         parts.append(
-            "\n\nThe typed tools for this skill are now available in your tool list. "
-            "Use them directly — do not call run_script."
+            "\n\nThe skill's typed tools are now available in your tool list. "
+            "Call them directly."
         )
-        # Raise ModelRetry so pydantic-ai sends a new request to the model.
-        # The new request is built after use_skill returns, so activated_skills
-        # already contains this skill — the prepare gate opens and the skill's
-        # typed tools appear in the tool list for the next LLM step.
-        raise ModelRetry("".join(parts))
+        return "".join(parts)
 
     # ── register_skill ───────────────────────────────────────────────
 
