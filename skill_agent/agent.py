@@ -183,6 +183,7 @@ class Agent:
             model,
             self._system_prompt,
             roots,
+            skills=self._skills,
             disabled_tools=tuple(cfg.disabled_tools),
             history_processors=list(cfg.history_processors),
         )
@@ -197,10 +198,11 @@ class Agent:
     # ── Public API ────────────────────────────────────────────────────
 
     def clear_conversation(self) -> None:
-        """Drop all remembered turns, todo list, message stores, and threads."""
+        """Drop all remembered turns, todo list, message stores, threads, and activated skills."""
         self._conversation_messages.clear()
         self._deps.todo_list.clear()
         self._deps._next_todo_id = 1
+        self._deps.activated_skills.clear()
         self.message_log.clear()
         self.context_window.clear()
         self.thread_registry = ThreadRegistry()
@@ -260,6 +262,7 @@ class Agent:
             self._model,
             self._system_prompt,
             resolved,
+            skills=self._skills,
             disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
             history_processors=list(getattr(self._config, "history_processors", None) or []),
         )
@@ -418,8 +421,7 @@ class Agent:
         return msg
 
     def _reset_run_state(self) -> None:
-        """Clear per-run bookkeeping. Todo list and IDs persist across turns; clear via clear_conversation()."""
-        self._deps.activated_skills.clear()
+        """Clear per-run bookkeeping. Todo list, activated_skills, and IDs persist across turns; clear via clear_conversation()."""
         self._deps.tool_log.clear()
         self._deps.pending_client_requests.clear()
         self._deps.pending_skill_loaded.clear()
@@ -715,6 +717,7 @@ class Agent:
                 self._model,
                 self._system_prompt,
                 roots,
+                skills=all_skills,
                 disabled_tools=tuple(getattr(self._config, "disabled_tools", ()) or ()),
                 history_processors=list(getattr(self._config, "history_processors", None) or []),
             )
@@ -877,10 +880,16 @@ def _create_runner(
     model: Model,
     system_prompt: str,
     user_file_roots: tuple[Path, ...],
+    skills: dict[str, "Skill"] | None = None,
     disabled_tools: tuple[str, ...] = (),
     history_processors: list[Any] | None = None,
 ) -> PydanticAgent[_RunDeps, str]:
     """Build the pydantic-ai runner and register all tools.
+
+    ``skills`` is the full skill registry. Each skill's ToolSpecs are registered
+    upfront with a ``prepare`` closure that hides them until the skill is active
+    (i.e. appears in ctx.deps.activated_skills). This implements progressive
+    disclosure of typed tool schemas without runner rebuilds.
 
     ``disabled_tools`` is an iterable of tool names that should not be
     registered with the runner. Each ``register_*_tools`` registrar is
@@ -920,7 +929,99 @@ def _create_runner(
     register_context_tools(runner, disabled_tools=disabled)
     register_thread_tools(runner, disabled_tools=disabled)
 
+    if skills:
+        _register_script_tools(runner, skills, disabled_tools=disabled)
+
     return runner
+
+
+def _register_script_tools(
+    runner: "PydanticAgent[_RunDeps, str]",
+    skills: dict[str, "Skill"],
+    disabled_tools: frozenset[str] = frozenset(),
+) -> None:
+    """Register each skill script as a typed tool with a prepare gate.
+
+    Tools are registered at build time but hidden from the model until
+    their owning skill appears in ctx.deps.activated_skills.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from pydantic_ai.tools import Tool as PydanticTool
+    from ._schema_extractor import build_argv
+
+    for skill in skills.values():
+        skill_dir = skill.path.parent if skill.path else None
+        for spec in skill.tool_specs:
+            if spec.tool_name in disabled_tools:
+                continue
+
+            def _make_handler(spec=spec, sk=skill, sd=skill_dir):
+                def handler(**kwargs: Any) -> str:
+                    if sd is None:
+                        return json.dumps({"ok": False, "stdout": "", "stderr": "Skill has no path.", "exit_code": 2})
+
+                    argv = build_argv(spec, kwargs)
+
+                    if sk.exec_style == "module":
+                        stem = spec.script_filename[:-3] if spec.script_filename.endswith(".py") else spec.script_filename
+                        cmd = [sys.executable, "-m", f"scripts.{stem}"]
+                    else:
+                        script_path = sd / "scripts" / spec.script_filename
+                        cmd = [sys.executable, str(script_path)]
+                    cmd.extend(argv)
+
+                    env = os.environ.copy()
+                    existing_pp = env.get("PYTHONPATH", "")
+                    paths = [str(sd), str(sd / "scripts")]
+                    if existing_pp:
+                        paths.append(existing_pp)
+                    env["PYTHONPATH"] = os.pathsep.join(paths)
+
+                    try:
+                        proc = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=90,
+                            cwd=str(sd),
+                            env=env,
+                        )
+                        stdout = (proc.stdout or "")[:7000]
+                        stderr = (proc.stderr or "")[:7000]
+                        return json.dumps({"ok": proc.returncode == 0, "stdout": stdout, "stderr": stderr, "exit_code": proc.returncode})
+                    except subprocess.TimeoutExpired:
+                        return json.dumps({"ok": False, "stdout": "", "stderr": "Script timed out after 90 seconds.", "exit_code": 124})
+                    except Exception as exc:
+                        return json.dumps({"ok": False, "stdout": "", "stderr": f"Error running script: {exc}", "exit_code": 1})
+
+                return handler
+
+            def _make_prepare(sn: str = spec.skill_name):
+                def prepare(ctx: Any, tool_def: Any) -> Any:
+                    if sn in ctx.deps.activated_skills:
+                        return tool_def
+                    return None
+                return prepare
+
+            try:
+                tool = PydanticTool.from_schema(
+                    function=_make_handler(),
+                    name=spec.tool_name,
+                    description=spec.description or f"Run {spec.script_filename} from skill {spec.skill_name}.",
+                    json_schema=spec.json_schema,
+                    takes_ctx=False,
+                )
+                tool.prepare = _make_prepare()
+                runner._function_toolset.add_tool(tool)  # type: ignore[attr-defined]
+            except Exception as exc:
+                logger.warning(
+                    "script_tool_registration_failed tool=%s err=%s",
+                    spec.tool_name, exc,
+                )
 
 
 # ── Provider-error translation ─────────────────────────────────────────

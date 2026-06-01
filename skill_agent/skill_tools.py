@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
 from .models import (
     ClientFunctionRequest,
@@ -177,7 +177,8 @@ def register_skill_tools(
         if resources:
             parts.append("\n\n## Bundled Resources\n" + "\n".join(resources))
             parts.append(
-                "\nUse `read_reference` to load docs and `run_script` to execute scripts."
+                "\nUse `read_reference` to load docs. "
+                "Scripts are available as typed tools in your tool list (e.g. `greeter__greet`)."
             )
 
         if skill.client_functions:
@@ -192,8 +193,15 @@ def register_skill_tools(
                 "They execute on the client, not in the agent."
             )
 
-        parts.append("\n\nFollow these instructions.")
-        return "".join(parts)
+        parts.append(
+            "\n\nThe typed tools for this skill are now available in your tool list. "
+            "Use them directly — do not call run_script."
+        )
+        # Raise ModelRetry so pydantic-ai sends a new request to the model.
+        # The new request is built after use_skill returns, so activated_skills
+        # already contains this skill — the prepare gate opens and the skill's
+        # typed tools appear in the tool list for the next LLM step.
+        raise ModelRetry("".join(parts))
 
     # ── register_skill ───────────────────────────────────────────────
 
@@ -419,6 +427,53 @@ def register_skill_tools(
 
         return content[:15000]
 
+    # ── list_skill_files ──────────────────────────────────────────────
+
+    @runner.tool(description=(
+        "List the reference files bundled with a skill. "
+        "Returns the filenames in references/ so you can decide which to read with read_reference. "
+        "Provide the skill_name of an already-loaded skill."
+    ))
+    def list_skill_files(
+        ctx: RunContext,
+        skill_name: str,
+        activity: ActivityDesc = "",
+    ) -> str:
+        skill = ctx.deps.skills.get(skill_name)
+        if not skill:
+            available = ", ".join(ctx.deps.skills) or "(none)"
+            return f"Skill '{skill_name}' not found. Available: {available}."
+
+        if skill.path is None:
+            return f"Skill '{skill_name}' has no path — cannot list files."
+
+        skill_dir = skill.path.parent
+        refs_dir = skill_dir / "references"
+
+        if not refs_dir.is_dir():
+            return f"Skill '{skill_name}' has no references/ directory."
+
+        # Path-safe enumeration: resolve each entry and assert containment
+        files: list[str] = []
+        try:
+            for entry in sorted(refs_dir.iterdir()):
+                if not entry.is_file():
+                    continue
+                resolved = entry.resolve()
+                refs_resolved = refs_dir.resolve()
+                try:
+                    resolved.relative_to(refs_resolved)
+                except ValueError:
+                    continue  # traversal — skip silently
+                if not entry.name.startswith(".") and not entry.name.startswith("_"):
+                    files.append(entry.name)
+        except Exception as exc:
+            return f"Error listing files: {exc}"
+
+        if not files:
+            return f"No reference files in skill '{skill_name}'."
+        return "\n".join(files)
+
     # ── run_script ────────────────────────────────────────────────────
 
     @runner.tool(description=(
@@ -459,9 +514,23 @@ def register_skill_tools(
         if not script_path.exists():
             return json.dumps({"ok": False, "stdout": "", "stderr": f"File not found on disk: {script_path}", "exit_code": 2})
 
-        cmd = [sys.executable, str(script_path)]
+        skill_dir = _resolve_skill_dir(skill)
+
+        if skill.exec_style == "module":
+            stem = filename[:-3] if filename.endswith(".py") else filename
+            cmd = [sys.executable, "-m", f"scripts.{stem}"]
+        else:
+            cmd = [sys.executable, str(script_path)]
         if args:
             cmd.extend(args)
+
+        import os
+        env = os.environ.copy()
+        existing_pp = env.get("PYTHONPATH", "")
+        paths = [str(skill_dir), str(skill_dir / "scripts")]
+        if existing_pp:
+            paths.append(existing_pp)
+        env["PYTHONPATH"] = os.pathsep.join(paths)
 
         stdout, stderr, exit_code, ok, truncated = "", "", 1, False, False
 
@@ -471,7 +540,8 @@ def register_skill_tools(
                 capture_output=True,
                 text=True,
                 timeout=90,
-                cwd=None,
+                cwd=str(skill_dir),
+                env=env,
             )
             stdout, stderr = proc.stdout or "", proc.stderr or ""
             exit_code = proc.returncode

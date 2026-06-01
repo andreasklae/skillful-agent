@@ -32,7 +32,7 @@ import json as _json
 import logging
 from pathlib import Path
 
-from .models import ClientFunction, Skill
+from .models import ClientFunction, Skill, ToolSpec
 
 logger = logging.getLogger(__name__)
 
@@ -146,15 +146,39 @@ def _parse_skill(skill_dir: Path) -> Skill | None:
         except Exception as exc:
             logger.warning("Failed to parse %s: %s", cf_path, exc)
 
+    scripts_dir = skill_dir / "scripts"
+    script_filenames = _list_files(scripts_dir)
+
+    # Detect execution style: module (-m scripts.x) vs direct (python scripts/x.py)
+    exec_style = "module" if (scripts_dir / "__init__.py").exists() else "direct"
+
+    # Extract typed tool specs from each non-private script
+    tool_specs: list[ToolSpec] = []
+    if scripts_dir.is_dir():
+        from ._schema_extractor import extract_tool_spec
+        skill_name = str(meta.get("name", skill_dir.name))
+        for filename in script_filenames:
+            script_path = scripts_dir / filename
+            try:
+                spec = extract_tool_spec(skill_name, script_path)
+                tool_specs.append(spec)
+            except Exception as exc:
+                logger.warning(
+                    "schema_extractor failed skill=%s script=%s err=%s",
+                    skill_name, filename, exc,
+                )
+
     return Skill(
         name=str(meta.get("name", skill_dir.name)),
         description=str(meta.get("description", "")),
         body=body,
         path=skill_file,
-        scripts=_list_files(skill_dir / "scripts"),
+        scripts=script_filenames,
         references=_list_files(skill_dir / "references"),
         assets=_list_files(skill_dir / "assets"),
         client_functions=client_functions,
+        tool_specs=tool_specs,
+        exec_style=exec_style,
     )
 
 

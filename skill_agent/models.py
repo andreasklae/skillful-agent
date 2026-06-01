@@ -47,6 +47,18 @@ class Skill(BaseModel):
         description="Functions that execute on the client, not the agent.",
     )
 
+    # Typed tool specs extracted from scripts/ at parse time (one per non-private script)
+    tool_specs: list["ToolSpec"] = Field(
+        default_factory=list,
+        description="Per-script typed tool specs, extracted via static AST analysis.",
+    )
+
+    # Execution convention: "direct" = python script_path, "module" = python -m scripts.name
+    exec_style: str = Field(
+        default="direct",
+        description="How to invoke scripts: 'direct' or 'module'.",
+    )
+
 
 # ── Client-side functions ─────────────────────────────────────────────
 #
@@ -107,6 +119,42 @@ class Tool(BaseModel):
     handler: Callable[[dict[str, Any]], str] = Field(
         exclude=True,
         description="Python function: receives input dict, returns string result.",
+    )
+
+
+# ── ToolSpec ──────────────────────────────────────────────────────────
+#
+# Extracted at registry parse time from a skill script. Carries both the
+# JSON Schema (for advertising to the model) and the argv_map (for
+# reconstructing the command line at invocation time).
+
+
+class ArgSpec(BaseModel):
+    """Metadata for one script argument, used to reconstruct argv."""
+
+    prop_name: str = Field(description="Property name in the JSON Schema.")
+    kind: str = Field(description="'flag' (--option) or 'positional'.")
+    option_string: str = Field(default="", description="The --flag string, if kind='flag'.")
+    positional_index: int = Field(default=0, description="Index among positionals, if kind='positional'.")
+    store_true: bool = Field(default=False, description="True if action='store_true'.")
+    is_array: bool = Field(default=False, description="True if nargs implies a list.")
+
+
+class ToolSpec(BaseModel):
+    """One typed tool derived from a skill script via static AST extraction."""
+
+    skill_name: str = Field(description="Name of the skill that owns this script.")
+    script_filename: str = Field(description="Filename within scripts/ (e.g. 'make_move.py').")
+    tool_name: str = Field(description="Namespaced tool name: {skill}__{script_stem}.")
+    description: str = Field(default="", description="Module docstring or empty.")
+    json_schema: dict[str, Any] = Field(description="JSON Schema for the tool's parameters.")
+    argv_map: list[ArgSpec] = Field(
+        default_factory=list,
+        description="Ordered list of arg specs for argv reconstruction.",
+    )
+    tier: int = Field(
+        default=4,
+        description="Extraction tier used: 1=typed entrypoint, 2=argparse, 3=click/typer, 4=generic.",
     )
 
 

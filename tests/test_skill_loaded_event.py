@@ -109,9 +109,11 @@ def test_use_skill_queues_skill_loaded_event(tmp_path: Path) -> None:
 
     deps = _StubDeps(skills={"demo": skill})
     ctx = _StubCtx(deps=deps)
-    result = use_skill_fn(ctx, skill_name="demo")
+    from pydantic_ai import ModelRetry
+    with pytest.raises(ModelRetry) as exc_info:
+        use_skill_fn(ctx, skill_name="demo")
 
-    assert "## Skill: demo" in result
+    assert "## Skill: demo" in exc_info.value.message
     assert len(deps.pending_skill_loaded) == 1
     ev = deps.pending_skill_loaded[0]
     assert isinstance(ev, SkillLoadedEvent)
@@ -127,7 +129,9 @@ def test_use_skill_source_is_builtin_when_no_path() -> None:
 
     deps = _StubDeps(skills={"no-path-skill": skill})
     ctx = _StubCtx(deps=deps)
-    use_skill_fn(ctx, skill_name="no-path-skill")
+    from pydantic_ai import ModelRetry
+    with pytest.raises(ModelRetry):
+        use_skill_fn(ctx, skill_name="no-path-skill")
 
     assert len(deps.pending_skill_loaded) == 1
     assert deps.pending_skill_loaded[0].source == "<builtin>"
@@ -156,12 +160,15 @@ def test_pending_skill_loaded_separate_per_call() -> None:
     deps = _StubDeps(skills={"skill-a": skill_a, "skill-b": skill_b})
     ctx = _StubCtx(deps=deps)
 
-    use_skill_fn(ctx, skill_name="skill-a")
+    from pydantic_ai import ModelRetry
+    with pytest.raises(ModelRetry):
+        use_skill_fn(ctx, skill_name="skill-a")
     assert len(deps.pending_skill_loaded) == 1
 
     # Simulate the agent clearing pending between tool results (as _event_stream does)
     deps.pending_skill_loaded.clear()
 
-    use_skill_fn(ctx, skill_name="skill-b")
+    with pytest.raises(ModelRetry):
+        use_skill_fn(ctx, skill_name="skill-b")
     assert len(deps.pending_skill_loaded) == 1
     assert deps.pending_skill_loaded[0].name == "skill-b"

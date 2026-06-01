@@ -68,23 +68,33 @@ def _build_agent(settings: ServerSettings) -> Agent:
 
     if settings.use_ex3:
         from pydantic_ai.providers.openai import OpenAIProvider
+        from pydantic_ai.models.openai import OpenAIModelProfile
 
         provider = OpenAIProvider(base_url=settings.ex3_base_url, api_key="dummy")
+        # vLLM / Gemma 4: disable strict tool definitions and tool_choice=required.
+        # The default OpenAI profile sends both; vLLM does not support strict, and
+        # tool_choice=required behaviour is undefined for Gemma. These cause
+        # intermittent HTTP 400 errors with malformed JSON messages.
+        profile = OpenAIModelProfile(
+            openai_supports_strict_tool_definition=False,
+            openai_supports_tool_choice_required=False,
+        )
     elif settings.use_azure:
         from pydantic_ai.providers.azure import AzureProvider
 
-        api_key = settings.azure_api_key or resolve_openai_api_key(settings)
         provider = AzureProvider(
             azure_endpoint=settings.azure_endpoint,
             api_version=settings.azure_api_version,
-            api_key=api_key,
+            api_key=settings.azure_api_key or resolve_openai_api_key(settings),
         )
+        profile = None
     else:
         from pydantic_ai.providers.openai import OpenAIProvider
 
         provider = OpenAIProvider(api_key=resolve_openai_api_key(settings))
+        profile = None
 
-    model = OpenAIChatModel(settings.openai_model, provider=provider)
+    model = OpenAIChatModel(settings.openai_model, provider=provider, profile=profile)
     return Agent(
         model=model,
         skills_dir=Path(settings.skills_dir),
