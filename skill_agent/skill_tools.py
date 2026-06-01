@@ -1,12 +1,10 @@
 """Built-in skill tools: use_skill, register_skill, scaffold_skill, manage_todos,
-read_reference, run_script, write_skill_file, read_user_file, call_client_function.
+read_reference, list_skill_files, write_skill_file, read_user_file, call_client_function.
 
 Extracted from agent.py to keep each file focused on one concern.
 """
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -205,7 +203,7 @@ def register_skill_tools(
         "Register a newly created skill so it becomes usable in this session. "
         "Call this after creating a new skill directory with a SKILL.md file. "
         "Provide the absolute path to the skill directory (the folder containing SKILL.md). "
-        "After registering, you can use use_skill, run_script, and read_reference with it."
+        "After registering, you can use use_skill and read_reference with it, and the skill's typed script tools will be available after calling use_skill."
     ))
     def register_skill(
         ctx: RunContext,
@@ -237,7 +235,7 @@ def register_skill_tools(
         return (
             f"Registered skill '{parsed.name}' from {skill_dir}.\n"
             f"  Resources: {res_info}\n"
-            f"You can now use use_skill('{parsed.name}'), run_script('{parsed.name}', ...), "
+            f"You can now use use_skill('{parsed.name}'), "
             f"and read_reference('{parsed.name}', ...)."
         )
 
@@ -305,7 +303,7 @@ def register_skill_tools(
         return (
             f"Created and registered skill '{name}' at:\n  {skill_dir}\n\n"
             f"Next: write the SKILL.md body and scripts using write_skill_file(skill_name='{name}', path=..., content=...).\n"
-            f"Use run_script(skill_name='{name}', filename=...) to execute scripts once added."
+            f"Call use_skill('{name}') to load it; its typed script tools will then be available."
         )
 
     # ── manage_todos ──────────────────────────────────────────────────
@@ -469,100 +467,6 @@ def register_skill_tools(
         if not files:
             return f"No reference files in skill '{skill_name}'."
         return "\n".join(files)
-
-    # ── run_script ────────────────────────────────────────────────────
-
-    @runner.tool(description=(
-        "Run a Python script bundled with a skill. "
-        "Provide skill_name, filename, and args as a list of strings. "
-        "Each element of args becomes one entry in the script's sys.argv. "
-        "For scripts that take no arguments, pass args=[]. "
-        "For scripts that take a single move, pass args=['e2e4']. "
-        "For scripts with multi-token free text, each token (or the whole text "
-        "as one element) is one list entry; do NOT embed shell quoting. "
-        "Example with free text: args=['e2e4', 'Pushed pawn to control center.']. "
-        "Returns JSON with keys: ok, stdout, stderr, exit_code."
-    ))
-    def run_script(
-        ctx: RunContext,
-        skill_name: str,
-        filename: str,
-        args: list[str],
-        activity: ActivityDesc = "",
-    ) -> str:
-        skill = ctx.deps.skills.get(skill_name)
-        if not skill:
-            available = ", ".join(ctx.deps.skills) or "(none)"
-            return json.dumps({"ok": False, "stdout": "", "stderr": (
-                f"Skill '{skill_name}' not found. Available: {available}. "
-                f"If you just created this skill with scaffold_skill.py, you must call "
-                f"register_skill(skill_dir_path=<absolute path to skill directory>) before "
-                f"run_script or read_reference will work for it."
-            ), "exit_code": 2})
-        if filename not in skill.scripts:
-            return json.dumps({"ok": False, "stdout": "", "stderr": (
-                f"Script '{filename}' not found in skill '{skill_name}'. "
-                f"Available scripts: {skill.scripts}. "
-                f"If you just added this file, call register_skill again to refresh."
-            ), "exit_code": 2})
-
-        script_path = _resolve_skill_dir(skill) / "scripts" / filename
-        if not script_path.exists():
-            return json.dumps({"ok": False, "stdout": "", "stderr": f"File not found on disk: {script_path}", "exit_code": 2})
-
-        skill_dir = _resolve_skill_dir(skill)
-
-        if skill.exec_style == "module":
-            stem = filename[:-3] if filename.endswith(".py") else filename
-            cmd = [sys.executable, "-m", f"scripts.{stem}"]
-        else:
-            cmd = [sys.executable, str(script_path)]
-        if args:
-            cmd.extend(args)
-
-        import os
-        env = os.environ.copy()
-        existing_pp = env.get("PYTHONPATH", "")
-        paths = [str(skill_dir), str(skill_dir / "scripts")]
-        if existing_pp:
-            paths.append(existing_pp)
-        env["PYTHONPATH"] = os.pathsep.join(paths)
-
-        stdout, stderr, exit_code, ok, truncated = "", "", 1, False, False
-
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=90,
-                cwd=str(skill_dir),
-                env=env,
-            )
-            stdout, stderr = proc.stdout or "", proc.stderr or ""
-            exit_code = proc.returncode
-            ok = proc.returncode == 0
-        except subprocess.TimeoutExpired:
-            stderr, exit_code = "Script timed out after 90 seconds.", 124
-        except Exception as e:
-            stderr, exit_code = f"Error running script: {e}", 1
-
-        max_chars = 7000
-        if len(stdout) > max_chars:
-            stdout, truncated = stdout[:max_chars] + "...[truncated]", True
-        if len(stderr) > max_chars:
-            stderr, truncated = stderr[:max_chars] + "...[truncated]", True
-
-        response = json.dumps({"ok": ok, "stdout": stdout, "stderr": stderr, "exit_code": exit_code})
-
-        ctx.deps.tool_log.append(ToolCallRecord(
-            tool="run_script",
-            input={"skill_name": skill_name, "filename": filename, "args": args},
-            output_preview=_preview(response, limit=500),
-            truncated=truncated,
-        ))
-
-        return response[:15000]
 
     # ── write_skill_file ─────────────────────────────────────────────
 

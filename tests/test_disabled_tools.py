@@ -26,7 +26,7 @@ def test_skill_tools_skip_disabled() -> None:
     register_skill_tools(runner, (), disabled_tools=frozenset({"manage_todos"}))
 
     assert "use_skill" in runner.registered, "non-disabled tool should still register"
-    assert "run_script" in runner.registered
+    assert "read_reference" in runner.registered
     assert "manage_todos" not in runner.registered, (
         "manage_todos was in disabled_tools and should not have been registered"
     )
@@ -39,7 +39,7 @@ def test_skill_tools_register_everything_by_default() -> None:
     register_skill_tools(runner, ())
 
     # Sanity check: tools that should always register.
-    for name in ("use_skill", "manage_todos", "run_script", "read_reference"):
+    for name in ("use_skill", "manage_todos", "list_skill_files", "read_reference"):
         assert name in runner.registered, f"{name} should register without filtering"
 
 
