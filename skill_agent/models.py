@@ -257,7 +257,8 @@ class ToolResultEvent(BaseModel):
         default=None,
         description=(
             "Full string result returned by the tool, if available. "
-            "For run_script, this is the JSON envelope {ok, stdout, stderr, exit_code}. "
+            "For a skill's typed script tool (<skill>__<script>), this is the "
+            "JSON envelope {ok, stdout, stderr, exit_code}. "
             "None for tools that return non-string results or where the result was not captured."
         ),
     )

@@ -8,7 +8,8 @@ The agent works like this:
     2. When run() or run_stream() is called, the LLM starts the loop:
          a. Calls manage_todos to plan its approach.
          b. Calls use_skill to load the full instructions for a skill.
-         c. Uses read_reference / run_script to access bundled resources.
+         c. Uses the skill's typed script tools (<skill>__<script>) and
+            read_reference to access bundled resources.
          d. Repeats until it produces a final text answer.
 
     3. Every meaningful step emits a typed AgentEvent. These are the
@@ -797,13 +798,13 @@ def _build_system_prompt(
 
 
 _ALL_KNOWN_TOOLS: frozenset[str] = frozenset({
-    "use_skill", "run_script", "read_reference",
+    "use_skill", "read_reference",
     "manage_todos",
     "read_thread", "reply_to_thread", "archive_thread", "spawn_agent",
     "compress_message", "retrieve_message", "compress_all",
     "read_user_file", "write_user_file",
     "call_client_function", "register_skill", "scaffold_skill",
-    "write_skill_file",
+    "write_skill_file", "list_skill_files",
 })
 
 
