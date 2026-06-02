@@ -386,14 +386,18 @@ def register_skill_tools(
     # ── read_reference ────────────────────────────────────────────────
 
     @runner.tool(description=(
-        "Read a reference document bundled with a skill. "
-        "Provide the skill_name and filename (e.g. 'api_guide.md'). "
-        "Only works for files listed in the skill's references."
+        "Read a reference document bundled with a skill, by path. "
+        "Provide the skill_name and a path relative to the skill's references/ "
+        "directory — subfolders are supported, e.g. 'api_guide.md' or "
+        "'patterns/mating-patterns/back-rank-mate.md'. A leading 'references/' "
+        "is tolerated. Any file under references/ is readable; the path cannot "
+        "escape that directory. Use the references/ index pages (and any search "
+        "script the skill bundles) to find the path you want."
     ))
     def read_reference(
         ctx: RunContext,
         skill_name: str,
-        filename: str,
+        path: str,
         activity: ActivityDesc = "",
     ) -> str:
         skill = ctx.deps.skills.get(skill_name)
@@ -404,18 +408,36 @@ def register_skill_tools(
                 f"If you just created this skill with scaffold_skill.py, call "
                 f"register_skill(skill_dir_path=<absolute path to the skill directory>) first."
             )
-        if filename not in skill.references:
-            return f"'{filename}' not in {skill_name}. Available: {skill.references}"
 
-        ref_path = _resolve_skill_dir(skill) / "references" / filename
-        if not ref_path.exists():
-            return f"File not found on disk: {ref_path}"
+        try:
+            refs_dir = (_resolve_skill_dir(skill) / "references").resolve()
+        except ValueError as e:
+            return str(e)
+        if not refs_dir.is_dir():
+            return f"Skill '{skill_name}' has no references/ directory."
 
-        content = ref_path.read_text(encoding="utf-8")
+        rel = path.strip().lstrip("/")
+        if rel.startswith("references/"):
+            rel = rel[len("references/"):]
+
+        target = (refs_dir / rel).resolve()
+        # Path jail: the resolved target must stay inside references/.
+        try:
+            target.relative_to(refs_dir)
+        except ValueError:
+            return f"Path '{path}' escapes the skill's references/ directory."
+
+        if not target.is_file():
+            return (
+                f"No reference file at '{rel}' in skill '{skill_name}'. "
+                f"Check the references/ index for the correct path."
+            )
+
+        content = target.read_text(encoding="utf-8")
 
         ctx.deps.tool_log.append(ToolCallRecord(
             tool="read_reference",
-            input={"skill_name": skill_name, "filename": filename},
+            input={"skill_name": skill_name, "path": rel},
             truncated=len(content) > 15000,
         ))
 

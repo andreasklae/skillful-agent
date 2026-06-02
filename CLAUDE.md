@@ -72,7 +72,7 @@ FastAPI app with `create_app(agent=None)` factory pattern for dependency injecti
 | `register_skill` | skill_tools.py | Register a newly created skill directory so it becomes usable in this session |
 | `scaffold_skill` | skill_tools.py | Create a new skill directory with the standard skeleton and register it |
 | `manage_todos` | skill_tools.py | Plan and track an internal task list |
-| `read_reference` | skill_tools.py | Read a doc from a skill's `references/` directory |
+| `read_reference` | skill_tools.py | Read a doc from a skill's `references/` directory by path (subfolders supported; jailed to `references/`) |
 | `run_script` | skill_tools.py | Run a Python script from a skill's `scripts/` directory |
 | `write_skill_file` | skill_tools.py | Create or update a file inside a skill's directory (subject to permissions.yaml) |
 | `call_client_function` | skill_tools.py | Request execution of a client-declared function |
