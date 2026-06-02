@@ -21,15 +21,14 @@ If the question is about timeless facts you already know cold, skip the skill �
 
 ## The two scripts
 
-Both live in `scripts/` next to this file. Run them via the `run_script` tool with `skill_name="web-search-free"`.
+Both live in `scripts/` next to this file. After `use_skill("web-search-free")` they appear as the typed tools `web-search-free__search` and `web-search-free__fetch`. Call them directly.
 
 ### Search
 
 ```
-run_script(skill_name="web-search-free", filename="search.py", args=["<query>"])
+web-search-free__search(args=["<query>"])
 ```
 
-- `filename` is `"search.py"` — **not** `"scripts/search.py"`. The `scripts/` prefix is handled automatically.
 - `args` is a list of strings. Each element becomes one `sys.argv` entry — no shell quoting, no escaping. The query is one element regardless of how many words it has: `args=["fun facts Germany"]` → `sys.argv[1] = "fun facts Germany"`.
 - Default result limit is 10. To override, pass the limit as a second element: `args=["fun facts Germany", "5"]`.
 
@@ -43,11 +42,10 @@ Pick the 1–3 most promising hits and fetch those — don't fetch every result.
 ### Fetch
 
 ```
-run_script(skill_name="web-search-free", filename="fetch.py", args=["https://example.com"])
-run_script(skill_name="web-search-free", filename="fetch.py", args=["https://example.com", "30000"])
+web-search-free__fetch(args=["https://example.com"])
+web-search-free__fetch(args=["https://example.com", "30000"])
 ```
 
-- `filename` is `"fetch.py"` — **not** `"scripts/fetch.py"`.
 - `args` is a list: URL first, optional `max_chars` as a second element. Each is a separate string — no quoting, no concatenation.
 - Default cap is 10,000 characters. Bump to 30000 when a single page is your whole answer.
 

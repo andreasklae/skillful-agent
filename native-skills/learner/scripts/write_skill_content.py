@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Write content to a file, creating parent directories as needed.
 
-Usage (via run_script):
-    run_script(skill_name="learner", filename="write_skill_content.py",
-               args=['{"path": "/abs/path/to/file.md", "content": "file content"}'])
+Usage (typed tool after use_skill('learner')):
+    learner__write_skill_content(args=['{"path": "/abs/path/to/file.md", "content": "file content"}'])
 
-Reads args from stdin (piped by run_script) for reliable handling of large
-content and special characters. Falls back to sys.argv[1] for small inputs.
+Reads its JSON arg from sys.argv[1] (the typed-tool handler passes args on
+the command line). A legacy stdin path is kept as a fallback. Prefer the
+`write_skill_file` built-in tool over this script for large content — see
+the learner SKILL.md.
 
 Accepts JSON with:
   - path (required): absolute path to the file to write

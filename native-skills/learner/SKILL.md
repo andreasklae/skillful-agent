@@ -155,8 +155,7 @@ new skill should go. The **user skill directories** are listed in the system
 prompt — pass them to `list_skill_tree.py`:
 
 ```
-run_script(skill_name="learner", filename="list_skill_tree.py",
-           args=['{"roots": ["/path/to/Research", "/path/to/Learning"]}'])
+learner__list_skill_tree(args=['{"roots": ["/path/to/Research", "/path/to/Learning"]}'])
 ```
 
 The script consumes `sys.argv[1]` as a JSON blob, so wrap the JSON string in a single-element list.
@@ -208,7 +207,7 @@ This additionally creates:
   can never overwrite it once it exists. Instruct users to edit it directly.
 
 The tool returns the absolute path to the new skill. Use that path in all
-subsequent `write_skill_file` and `run_script` calls.
+subsequent `write_skill_file` and `learner__*` script-tool calls.
 
 Only use the manual `register_skill` tool if you created directories
 yourself via `write_skill_file` instead of `scaffold_skill`.
@@ -220,8 +219,7 @@ the skill's `docs/` folder. The content never enters the context window —
 this is the primary mechanism for "save, don't load":
 
 ```
-run_script(skill_name="learner", filename="save_doc.py",
-           args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
+learner__save_doc(args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
 ```
 
 `save_doc.py` reads `sys.argv[1]` as a JSON blob — wrap the whole JSON string as one element in `args`.
@@ -247,9 +245,10 @@ write_skill_file(file_path="/abs/path/to/file.md", content="file content")
 Set `append=True` to append instead of overwrite. This tool creates parent
 directories automatically.
 
-**Always use `write_skill_file` for writing files**, not `run_script` with
-`write_skill_content.py`. The `write_skill_file` tool handles large content
-and special characters reliably because it avoids double-encoding issues.
+**Always use `write_skill_file` for writing files**, not the
+`learner__write_skill_content` script tool. The `write_skill_file` tool
+handles large content and special characters reliably because it avoids
+double-encoding issues.
 
 ### 2.5 Execute Research
 

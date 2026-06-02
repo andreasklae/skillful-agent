@@ -15,7 +15,7 @@ uv sync --extra examples   # Include example skill dependencies (wikipedia-api)
 uv sync --extra server     # Include FastAPI server dependencies
 uv run Example.py          # Run the example CLI agent
 uv run run_server.py       # Run the HTTP server
-uv run pytest tests/ -v    # Run the test suite (109 tests)
+uv run pytest tests/ -v    # Run the test suite (151 tests)
 ```
 
 No linter is configured in pyproject.toml.
@@ -30,7 +30,7 @@ No linter is configured in pyproject.toml.
 - **`messages.py`** — `Message` model (id, timestamp, type, content, summary) and `SourceContext` hierarchy (`UIContext`, `EmailContext`, `SubAgentContext`). Every conversation step is logged as a `Message`.
 - **`threads.py`** — `Thread`, `ThreadMessage`, `ThreadRole`, `ThreadStatus`, `ThreadRegistry`, `ThreadEvent`. Bidirectional message channels. `send()` = participant-authored (inbound, fires inbound listeners). `reply()` = agent-authored (outbound, fires outbound listeners). `ThreadMessage.events` carries the serialized `AgentEvent` list for the run that produced the message.
 - **`thread_tools.py`** — `read_thread`, `reply_to_thread`, `archive_thread`, `spawn_agent`. Registered as pydantic-ai tools. `spawn_agent` creates a plain `Agent` instance and wires bidirectional listeners: outbound (parent→subagent via `thread.reply()`) and inbound notification (subagent→parent via `thread.send()` → `_register_thread_notification`). The event loop is captured at spawn time and stored in the closure.
-- **`skill_tools.py`** — `use_skill`, `register_skill`, `scaffold_skill`, `manage_todos`, `read_reference`, `run_script`, `write_skill_file`, `call_client_function`, plus conditional `read_user_file` / `write_user_file` (registered only when `AgentConfig.user_file_roots` is set).
+- **`skill_tools.py`** — `use_skill`, `register_skill`, `scaffold_skill`, `manage_todos`, `read_reference`, `list_skill_files`, `write_skill_file`, `call_client_function`, plus conditional `read_user_file` / `write_user_file` (registered only when `AgentConfig.user_file_roots` is set). Skill *scripts* are not registered here — they are exposed as typed tools `<skill>__<script>` by `_register_script_tools` in `agent.py` (see "Skill scripts as typed tools").
 - **`context_tools.py`** — `compress_message`, `retrieve_message`, `compress_all`. Auto-compression triggers when `input_tokens` exceeds `AgentConfig.context_compression_threshold` (default 100k).
 - **`registry.py`** — `discover_skills()` recursively scans directories for `SKILL.md` files with YAML-like frontmatter. Custom frontmatter parser (no PyYAML dependency). Also loads `client_functions.json` if present.
 - **`user_prompt_files.py`** — `build_user_message()` turns text + file paths into pydantic-ai message parts (text inlined, images as `BinaryContent`, PDFs extracted via pdfplumber).
@@ -55,6 +55,7 @@ FastAPI app with `create_app(agent=None)` factory pattern for dependency injecti
 ### Key Design Decisions
 
 - **Progressive disclosure**: System prompt includes only skill names + descriptions. Full SKILL.md body is loaded only when the LLM calls `use_skill`.
+- **Skill scripts as typed tools**: There is no generic `run_script` tool. At build time, `_register_script_tools` (in `agent.py`) registers each `scripts/*.py` of every skill as a pydantic-ai tool named `<skill>__<script>`, with a JSON schema extracted statically from the script (`_schema_extractor.py`: typed `main`/`run` → argparse → generic `args: list[str]` fallback). A `prepare` gate hides each script tool until its owning skill is in `ctx.deps.activated_skills` — so `use_skill` reveals the skill's scripts without a runner rebuild. The handler runs the script as a subprocess and returns `{ok, stdout, stderr, exit_code}`.
 - **Two skill sources**: Native skills ship with the SDK from `native-skills/`. User skills come from `skills_dir`. User skills override native skills with the same name.
 - **Thread-based communication**: All inter-agent and external communication flows through named threads. `send()` = participant-authored (inbound). `reply()` = agent-authored (outbound). The asymmetry is intentional — the parent agent is the "agent" side of subagent threads, the subagent is the "participant".
 - **Main thread mirrors context_window**: The `"main"` thread is not a separate store. `thread_registry.get("main").reply(answer)` is called at run completion to attach the answer and its event log to the thread, but the actual storage is `context_window`.
@@ -73,8 +74,9 @@ FastAPI app with `create_app(agent=None)` factory pattern for dependency injecti
 | `scaffold_skill` | skill_tools.py | Create a new skill directory with the standard skeleton and register it |
 | `manage_todos` | skill_tools.py | Plan and track an internal task list |
 | `read_reference` | skill_tools.py | Read a doc from a skill's `references/` directory by path (subfolders supported; jailed to `references/`) |
-| `run_script` | skill_tools.py | Run a Python script from a skill's `scripts/` directory |
+| `list_skill_files` | skill_tools.py | List the files in a skill's `references/` directory |
 | `write_skill_file` | skill_tools.py | Create or update a file inside a skill's directory (subject to permissions.yaml) |
+| `<skill>__<script>` | agent.py (`_register_script_tools`) | Each `scripts/*.py` in a skill is a typed tool, revealed after `use_skill`. Args come from the script's signature (argparse / typed `main`), falling back to a generic `args: list[str]`. Returns `{ok, stdout, stderr, exit_code}`. **Replaces the former generic `run_script` tool.** |
 | `call_client_function` | skill_tools.py | Request execution of a client-declared function |
 | `read_user_file` | skill_tools.py | *(Conditional)* Read files under `AgentConfig.user_file_roots` |
 | `write_user_file` | skill_tools.py | *(Conditional)* Write files under `AgentConfig.user_file_roots` (supports utf-8 / base64) |
@@ -109,8 +111,8 @@ skill-name/
 ├── SKILL.md                # YAML frontmatter (name, description) + markdown body
 ├── client_functions.json   # Client-side function declarations (optional)
 ├── permissions.yaml        # Client-controlled permission rules (optional, agent cannot overwrite)
-├── scripts/                # Python scripts runnable via run_script
-├── references/             # Docs readable via read_reference
+├── scripts/                # Python scripts, each exposed as a typed tool <skill>__<script> after use_skill
+├── references/             # Docs readable via read_reference (by path, subfolders OK)
 └── assets/                 # Templates, icons, etc.
 ```
 
@@ -121,7 +123,7 @@ skill-name/
 - **Environment**: `API_KEY` in `.env` (loaded via python-dotenv)
 - **Packages**: `skill_agent/` (SDK), `server/` (FastAPI app), `native-skills/` (bundled), `skills/` (user)
 - **Entry points**: `run_server.py` (API), `Example.py` (CLI reference)
-- **Tests**: `pytest` with `anyio`-based async tests; 109 tests total
+- **Tests**: `pytest` with `anyio`-based async tests; 151 tests total
 
 ## Common Tasks
 

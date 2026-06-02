@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Fetch content from a source and save it directly to a skill's docs/ folder.
 
-Usage (via run_script):
-    run_script(skill_name="learner", filename="save_doc.py",
-               args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
+Usage (typed tool after use_skill('learner')):
+    learner__save_doc(args=['{"skill_path": "/path/to/skill", "source": "wikipedia", "query": "Oseberg ship", "language": "en"}'])
 
 The agent never handles the large content — this script fetches and writes
 in one step, keeping articles out of the context window entirely.

@@ -814,6 +814,8 @@ def _strip_disabled_tools_from_template(template: str, disabled_tools: frozenset
     Strips bullet lines that start with ``  - **<tool_name>**`` for every
     disabled tool name, and removes numbered rules whose only tool references
     are to disabled tools (so rules that mix enabled + disabled tools survive).
+    Then tidies up: surviving rules are renumbered sequentially, empty sections
+    are dropped, and runs of blank lines are collapsed to a single blank.
     """
     import re as _re
 
@@ -869,7 +871,29 @@ def _strip_disabled_tools_from_template(template: str, disabled_tools: frozenset
                 continue
         cleaned.append(l)
 
-    return "\n".join(cleaned)
+    # Renumber surviving top-level rules ("N. ...") sequentially, so gaps left
+    # by stripped rules don't show (e.g. 1, 3, 6 -> 1, 2, 3).
+    renumbered: list[str] = []
+    counter = 0
+    for l in cleaned:
+        m = _re.match(r"^(\d+)\.(\s.*)$", l)
+        if m:
+            counter += 1
+            renumbered.append(f"{counter}.{m.group(2)}")
+        else:
+            renumbered.append(l)
+
+    # Collapse runs of blank lines into a single blank, and trim leading/
+    # trailing blanks left by stripped sections.
+    collapsed: list[str] = []
+    for l in renumbered:
+        if l.strip() == "" and (not collapsed or collapsed[-1].strip() == ""):
+            continue
+        collapsed.append(l)
+    while collapsed and collapsed[-1].strip() == "":
+        collapsed.pop()
+
+    return "\n".join(collapsed)
 
 
 # ── Runner factory ─────────────────────────────────────────────────────

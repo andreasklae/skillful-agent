@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """Scaffold the directory structure for a new learned skill.
 
-Usage (via run_script):
-    run_script(skill_name="learner", filename="scaffold_skill.py",
-               args=['{"name": "my-skill"}'])
+Usage (typed tool after use_skill('learner')):
+    learner__scaffold_skill(args=['{"name": "my-skill"}'])
 
-    run_script(skill_name="learner", filename="scaffold_skill.py",
-               args=['{"name": "my-skill", "base_dir": "/path/to/category"}'])
+    learner__scaffold_skill(args=['{"name": "my-skill", "base_dir": "/path/to/category"}'])
 
     # For skills that expose an API or service with write operations:
-    run_script(skill_name="learner", filename="scaffold_skill.py",
-               args=['{"name": "my-api-skill", "base_dir": "/path/to/category", "api_writes": true}'])
+    learner__scaffold_skill(args=['{"name": "my-api-skill", "base_dir": "/path/to/category", "api_writes": true}'])
 
 Creates the following structure under the target directory:
     <name>/SKILL.md               - Frontmatter template with metadata fields

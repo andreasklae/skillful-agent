@@ -22,7 +22,7 @@ skills/                          skill_agent/ (the SDK)
     references/                    messages.py           Message, SourceContext hierarchy
     assets/                        threads.py            Thread, ThreadRegistry, ThreadMessage
                                    thread_tools.py       read_thread, reply_to_thread, spawn_agent
-                                   skill_tools.py        use_skill, run_script, manage_todos
+                                   skill_tools.py        use_skill, read_reference, manage_todos
                                    context_tools.py      compress_message, retrieve_message
                                    registry.py           SKILL.md discovery + parsing
                                    user_prompt_files.py  file attachments (images, PDFs)
@@ -669,8 +669,9 @@ All tools are automatically registered. The agent calls them during execution.
 | `register_skill(skill_dir_path)` | Register a newly-created skill directory for the current session |
 | `scaffold_skill(skill_name)` | Create a new skill directory with the standard skeleton and register it |
 | `manage_todos(action, ...)` | Plan and track internal task list (`add`, `update`, `complete`) |
-| `read_reference(skill, path)` | Read a document from skill's `references/` directory |
-| `run_script(skill, script, **kwargs)` | Execute Python script from skill's `scripts/` directory |
+| `read_reference(skill, path)` | Read a document from skill's `references/` directory (by path; subfolders OK) |
+| `list_skill_files(skill)` | List files in a skill's `references/` directory |
+| `<skill>__<script>(...)` | Each `scripts/*.py` is a typed tool revealed by `use_skill`; args from the script signature or generic `args: list[str]`. Replaces the former `run_script` tool. |
 | `write_skill_file(skill, path, content)` | Create or update a file inside a skill's directory (respects `permissions.yaml`) |
 | `call_client_function(name, **kwargs)` | Request client-side function execution |
 | `read_user_file(path)` | *(Conditional)* Read file from `AgentConfig.user_file_roots` |
@@ -692,8 +693,8 @@ my-skill/
 ├── SKILL.md                  # Required. YAML frontmatter + markdown body
 ├── client_functions.json     # Optional. Functions executed on client
 ├── permissions.yaml          # Optional. Write permissions (agent cannot overwrite)
-├── scripts/                  # Optional. Python scripts (runnable via run_script)
-├── references/               # Optional. Documentation (readable via read_reference)
+├── scripts/                  # Optional. Python scripts (each exposed as a typed tool <skill>__<script> after use_skill)
+├── references/               # Optional. Documentation (readable via read_reference, by path)
 └── assets/                   # Optional. Templates, icons, etc.
 ```
 
