@@ -154,6 +154,19 @@ def register_skill_tools(
             available = ", ".join(ctx.deps.skills)
             return f"Skill '{skill_name}' not found. Available: {available}"
 
+        # Idempotent re-load: when the skill is already active in this
+        # conversation, its full instructions are already in context (and its
+        # typed tools are already visible). Returning the full SKILL.md again
+        # would duplicate kilobytes of instructions per call — models with
+        # persistent conversations tend to call use_skill ritualistically at
+        # the start of every task/turn.
+        if skill_name in ctx.deps.activated_skills:
+            return (
+                f"Skill '{skill_name}' is already loaded — its instructions "
+                f"are earlier in your context and its tools are available. "
+                f"Proceed directly."
+            )
+
         ctx.deps.activated_skills.append(skill_name)
 
         # Queue a SkillLoadedEvent so the agent's event stream can emit it after the tool result.
